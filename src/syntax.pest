@@ -1,0 +1,12 @@
+WHITESPACE = _{ " " | "\t" | NEWLINE }
+number = { ASCII_DIGIT+ }
+ident = { ASCII_ALPHA+ }
+op = _{ add | sub }
+add = { "+" }
+sub = { "-" }
+expr = { term ~ (op ~ term)* }
+term = _{ number | ident | "(" ~ expr ~ ")" }
+let_stmt = { "let" ~ ident ~ "=" ~ expr ~ ";" }
+print = { "print(" ~ expr ~ ");" }
+stmt = _{ let_stmt | print }
+prog = _{ stmt* }
