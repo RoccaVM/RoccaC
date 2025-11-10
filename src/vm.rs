@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 
 use crate::{
-    bytecode::{BytecodeFile, Constant, Function, Opcode},
+    bytecode::{BytecodeFile, Constant, Opcode},
     native::NativeRegistry,
 };
 
@@ -125,6 +125,28 @@ impl VM {
                 }
                 op if op == Opcode::Sub as u8 => {
                     self.binary_op(|a, b| a - b)?;
+                }
+                op if op == Opcode::And as u8 => {
+                    self.comparison_op(|a, b| a != 0 && b != 0)?;
+                }
+                op if op == Opcode::Or as u8 => {
+                    self.comparison_op(|a, b| a != 0 || b != 0)?;
+                }
+                op if op == Opcode::Not as u8 => {
+                    self.bitwise_op(|a| !a)?;
+                }
+                op if op == Opcode::Eq as u8 => {
+                    self.comparison_op(|a, b| a == b)?;
+                }
+                op if op == Opcode::Ne as u8 => {
+                    self.comparison_op(|a, b| a != b)?;
+                }
+                op if op == Opcode::Jump as u8 => {
+                    let loc = self.read_u32(code)? as usize;
+                    if loc > code.len() - 1 {
+                        bail!("Invalid jump address");
+                    }
+                    self.pc = loc;
                 }
                 op if op == Opcode::Call as u8 => {
                     self.execute_call(code)?;
@@ -278,6 +300,20 @@ impl VM {
 
         let result = f(a.as_i64()?, b.as_i64()?);
         self.stack.push(Value::Boolean(result));
+        Ok(())
+    }
+
+    fn bitwise_op<F>(&mut self, f: F) -> Result<()>
+    where
+        F: FnOnce(i64) -> i64,
+    {
+        let a = self
+            .stack
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
+
+        let result = f(a.as_i64()?);
+        self.stack.push(Value::Integer(result));
         Ok(())
     }
 
