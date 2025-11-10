@@ -13,7 +13,7 @@ pub enum ParserError {
     WrongPairCount(usize, usize),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum AstNode {
     Number(i64),
     Ident(String),

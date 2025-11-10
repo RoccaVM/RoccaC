@@ -3,6 +3,8 @@ use std::{fs, path::PathBuf};
 use anyhow::Result;
 use clap::Parser;
 
+pub mod bytecode;
+pub mod compiler;
 pub mod parser;
 
 #[derive(Parser)]
@@ -17,6 +19,11 @@ fn main() -> Result<()> {
 
     let tree = parser::parse(contents.as_str())?;
     println!("{tree:?}");
+
+    let mut compiler = compiler::Compiler::default();
+    let bytecode = compiler.compile(tree)?;
+
+    println!("{bytecode:#?}");
 
     Ok(())
 }
