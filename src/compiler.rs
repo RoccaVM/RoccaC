@@ -138,8 +138,9 @@ impl Compiler {
             self.pop_stack();
         }
 
-        self.emit_opcode(Opcode::Call);
+        self.emit_opcode(Opcode::CallNative);
         self.emit_u32(name_idx);
+        self.emit_byte(args.len() as u8);
 
         self.push_stack();
 

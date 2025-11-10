@@ -66,6 +66,7 @@ pub enum Opcode {
     Jump = 0x60,
     Call = 0x61,
     Ret = 0x62,
+    CallNative = 0x63,
 }
 
 impl Default for BytecodeFile {
