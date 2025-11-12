@@ -9,9 +9,12 @@ use crate::vm::Value;
 
 pub type NativeFunction = fn(&[Value]) -> Result<Value>;
 
+// (fn, artiy, vararg, returns value)
+pub type NativeFnDesc = (NativeFunction, u8, bool, bool);
+
 #[derive(Debug)]
 pub struct NativeRegistry {
-    functions: HashMap<String, NativeFunction>,
+    functions: HashMap<String, NativeFnDesc>,
 }
 
 impl Default for NativeRegistry {
@@ -31,16 +34,20 @@ impl NativeRegistry {
         registry
     }
 
-    pub fn get(&self, name: &str) -> Option<&NativeFunction> {
+    pub fn get(&self, name: &str) -> Option<&NativeFnDesc> {
         self.functions.get(name)
     }
 
-    pub fn register(&mut self, name: &str, func: NativeFunction) {
+    pub fn register(&mut self, name: &str, func: NativeFnDesc) {
         self.functions.insert(name.to_string(), func);
     }
 
     fn register_io_functions(&mut self) {
-        self.register("print", native_print);
+        self.register("print", (native_print, 1, true, false));
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.functions.contains_key(name)
     }
 }
 

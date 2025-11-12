@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 
 use anyhow::{Ok, Result};
 
-pub const MAGIC: u32 = 0x52434D42;
+pub const MAGIC: u32 = 0x424D4352;
 pub const VERSION: u16 = 1;
 
 #[derive(Clone, Debug)]

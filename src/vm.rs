@@ -236,7 +236,7 @@ impl VM {
             }
             args.reverse();
 
-            let result = native_func(&args)?;
+            let result = native_func.0(&args)?;
 
             if !matches!(result, Value::Null) {
                 self.stack.push(result);

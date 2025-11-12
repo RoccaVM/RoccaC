@@ -1,5 +1,7 @@
-let a = 5;
-let b = 7;
-let c = a + b;
-print(c);
-print(c + c);
+fn main() {
+  print(add(5, 7));
+}
+
+fn add(a, b) {
+  return a + b;
+}
