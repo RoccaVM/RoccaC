@@ -46,7 +46,7 @@ pub struct Function {
     pub code: Vec<u8>,
 }
 
-#[derive(Eq, PartialEq, TryFromPrimitive, Debug)]
+#[derive(Clone, Eq, PartialEq, TryFromPrimitive, Debug)]
 #[repr(u8)]
 pub enum Opcode {
     // Stack

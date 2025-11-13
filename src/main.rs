@@ -10,6 +10,7 @@ use crate::{bytecode::BytecodeFile, vm::VM};
 
 pub mod bytecode;
 pub mod compiler;
+pub mod disassembler;
 pub mod native;
 pub mod parser;
 pub mod registry;
@@ -31,10 +32,20 @@ struct RoccaVM {
     /// Add debug symbols
     #[arg(short, long)]
     debug: bool,
+
+    /// Show disassembled bytecode
+    #[arg(long)]
+    disasm: bool,
 }
 
 fn main() -> Result<()> {
     let cli = RoccaVM::parse();
+
+    if cli.disasm {
+        let mut file = File::open(cli.file)?;
+        let bytecode = BytecodeFile::read(&mut file)?;
+        return disassembler::ui::run(bytecode);
+    }
 
     if cli.run {
         let mut file = File::open(cli.file)?;
