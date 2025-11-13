@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 
-use anyhow::{Ok, Result};
+use anyhow::Result;
+use bitfield_struct::bitfield;
 use num_enum::TryFromPrimitive;
 
 pub const MAGIC: u32 = 0x424D4352;
@@ -14,11 +15,20 @@ pub struct BytecodeFile {
     pub entrypoint: u32,
 }
 
+#[bitfield(u16)]
+pub struct Flags {
+    #[bits(1)]
+    pub debug_symbols: bool,
+
+    #[bits(15)]
+    _padding: u16,
+}
+
 #[derive(Clone, Debug)]
 pub struct Header {
     pub magic: u32,
     pub version: u16,
-    pub flags: u16,
+    pub flags: Flags,
 }
 
 #[derive(Clone, Debug)]
@@ -79,7 +89,7 @@ impl Default for BytecodeFile {
             header: Header {
                 magic: MAGIC,
                 version: VERSION,
-                flags: 0,
+                flags: Flags::new(),
             },
             const_pool: Vec::new(),
             functions: Vec::new(),
@@ -99,7 +109,8 @@ impl BytecodeFile {
     pub fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
         writer.write_all(&self.header.magic.to_le_bytes())?;
         writer.write_all(&self.header.version.to_le_bytes())?;
-        writer.write_all(&self.header.flags.to_le_bytes())?;
+        let flags: u16 = self.header.flags.into();
+        writer.write_all(&flags.to_le_bytes())?;
 
         writer.write_all(&(self.const_pool.len() as u32).to_le_bytes())?;
         for c in &self.const_pool {
@@ -118,8 +129,10 @@ impl BytecodeFile {
 
         writer.write_all(&(self.functions.len() as u32).to_le_bytes())?;
         for func in &self.functions {
-            writer.write_all(&[func.name.len() as u8])?;
-            writer.write_all(func.name.as_bytes())?;
+            if self.header.flags.debug_symbols() {
+                writer.write_all(&[func.name.len() as u8])?;
+                writer.write_all(func.name.as_bytes())?;
+            }
 
             writer.write_all(&[func.arity])?;
             writer.write_all(&func.locals_count.to_le_bytes())?;
@@ -153,6 +166,7 @@ impl BytecodeFile {
         let mut flag_bytes = [0u8; 2];
         reader.read_exact(&mut flag_bytes)?;
         let flags = u16::from_le_bytes(flag_bytes);
+        let flags = Flags::from(flags);
 
         let mut const_count_bytes = [0u8; 4];
         reader.read_exact(&mut const_count_bytes)?;
@@ -191,11 +205,15 @@ impl BytecodeFile {
         let func_count = u32::from_le_bytes(func_count_bytes);
         let mut funcs = Vec::with_capacity(func_count as usize);
         for _ in 0..func_count {
-            let mut func_len_bytes = [0u8; 1];
-            reader.read_exact(&mut func_len_bytes)?;
-            let mut func_name_bytes = vec![0u8; func_len_bytes[0] as usize];
-            reader.read_exact(&mut func_name_bytes)?;
-            let name = String::from_utf8(func_name_bytes)?;
+            let name = if flags.debug_symbols() {
+                let mut func_len_bytes = [0u8; 1];
+                reader.read_exact(&mut func_len_bytes)?;
+                let mut func_name_bytes = vec![0u8; func_len_bytes[0] as usize];
+                reader.read_exact(&mut func_name_bytes)?;
+                String::from_utf8(func_name_bytes)?
+            } else {
+                "".to_string()
+            };
 
             let mut arity_bytes = [0u8; 1];
             reader.read_exact(&mut arity_bytes)?;

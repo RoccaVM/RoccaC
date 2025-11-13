@@ -27,6 +27,10 @@ struct RoccaVM {
     /// Run from compiled bytecode
     #[arg(short, long)]
     run: bool,
+
+    /// Add debug symbols
+    #[arg(short, long)]
+    debug: bool,
 }
 
 fn main() -> Result<()> {
@@ -47,7 +51,8 @@ fn main() -> Result<()> {
     let tree = parser::parse(contents.as_str())?;
 
     let mut compiler = compiler::Compiler::default();
-    let bytecode = compiler.compile(tree)?;
+    let mut bytecode = compiler.compile(tree)?;
+    bytecode.header.flags = bytecode.header.flags.with_debug_symbols(cli.debug);
 
     if cli.compile {
         let mut out_name = cli.file.clone();
