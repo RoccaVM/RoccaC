@@ -158,7 +158,9 @@ impl Compiler {
         args: Vec<String>,
         body: Vec<AstNode>,
     ) -> Result<()> {
-        if self.current_function.is_some() {
+        if let Some(cf) = self.current_function.clone()
+            && cf.code.last().is_none_or(|&op| op != Opcode::Ret as u8)
+        {
             self.emit_opcode(Opcode::Ret);
         }
 
