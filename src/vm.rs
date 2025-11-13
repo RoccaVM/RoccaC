@@ -35,6 +35,7 @@ pub struct VM {
     stack: Vec<Value>,
     locals: Vec<Value>,
     pc: usize,
+    running: bool,
     native_registry: NativeRegistry,
     call_stack: Vec<CallFrame>,
     current_function: usize,
@@ -61,6 +62,8 @@ impl VM {
             bail!("Invalid entry point")
         }
 
+        self.running = true;
+
         let main_func = &self.bytecode.functions[entry_idx].clone();
         self.locals = vec![Value::Null; main_func.locals_count as usize];
 
@@ -78,14 +81,14 @@ impl VM {
             let opcode = code[self.pc];
             self.pc += 1;
 
-            match opcode {
-                op if op == Opcode::Nop as u8 => {
+            match Opcode::try_from(opcode) {
+                Ok(Opcode::Nop) => {
                     // Do nothing
                 }
-                op if op == Opcode::Pop as u8 => {
+                Ok(Opcode::Pop) => {
                     self.stack.pop();
                 }
-                op if op == Opcode::Dup as u8 => {
+                Ok(Opcode::Dup) => {
                     let val = self
                         .stack
                         .last()
@@ -93,7 +96,7 @@ impl VM {
                         .clone();
                     self.stack.push(val);
                 }
-                op if op == Opcode::ConstI64 as u8 => {
+                Ok(Opcode::ConstI64) => {
                     let index = self.read_u32(code)?;
                     let constant = &self.bytecode.const_pool[index as usize];
                     if let Constant::Int(n) = constant {
@@ -102,14 +105,14 @@ impl VM {
                         bail!("Expected Integer constant");
                     }
                 }
-                op if op == Opcode::LoadLocal as u8 => {
+                Ok(Opcode::LoadLocal) => {
                     let index = self.read_u16(code)? as usize;
                     if index >= self.locals.len() {
                         bail!("Invalid local variable index: {index}");
                     }
                     self.stack.push(self.locals[index].clone());
                 }
-                op if op == Opcode::StoreLocal as u8 => {
+                Ok(Opcode::StoreLocal) => {
                     let index = self.read_u16(code)? as usize;
                     if index >= self.locals.len() {
                         bail!("Invalid local variable index: {index}");
@@ -120,45 +123,34 @@ impl VM {
                         .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
                     self.locals[index] = value;
                 }
-                op if op == Opcode::Add as u8 => {
-                    self.binary_op(|a, b| a + b)?;
-                }
-                op if op == Opcode::Sub as u8 => {
-                    self.binary_op(|a, b| a - b)?;
-                }
-                op if op == Opcode::And as u8 => {
-                    self.comparison_op(|a, b| a != 0 && b != 0)?;
-                }
-                op if op == Opcode::Or as u8 => {
-                    self.comparison_op(|a, b| a != 0 || b != 0)?;
-                }
-                op if op == Opcode::Not as u8 => {
-                    self.bitwise_op(|a| !a)?;
-                }
-                op if op == Opcode::Eq as u8 => {
-                    self.comparison_op(|a, b| a == b)?;
-                }
-                op if op == Opcode::Ne as u8 => {
-                    self.comparison_op(|a, b| a != b)?;
-                }
-                op if op == Opcode::Jump as u8 => {
+
+                Ok(Opcode::Add) => self.binary_op(|a, b| a + b)?,
+                Ok(Opcode::Sub) => self.binary_op(|a, b| a - b)?,
+                Ok(Opcode::Mul) => self.binary_op(|a, b| a * b)?,
+                Ok(Opcode::Div) => self.binary_op(|a, b| a / b)?,
+
+                Ok(Opcode::And) => self.comparison_op(|a, b| a != 0 && b != 0)?,
+                Ok(Opcode::Or) => self.comparison_op(|a, b| a != 0 || b != 0)?,
+                Ok(Opcode::Not) => self.bitwise_op(|a| !a)?,
+
+                Ok(Opcode::Eq) => self.comparison_op(|a, b| a == b)?,
+                Ok(Opcode::Ne) => self.comparison_op(|a, b| a != b)?,
+
+                Ok(Opcode::Jump) => {
                     let loc = self.read_u32(code)? as usize;
                     if loc > code.len() - 1 {
                         bail!("Invalid jump address");
                     }
                     self.pc = loc;
                 }
-                op if op == Opcode::Call as u8 => {
-                    self.execute_call(code)?;
-                }
-                op if op == Opcode::Ret as u8 => {
+                Ok(Opcode::Call) => self.execute_call(code)?,
+                Ok(Opcode::Ret) => {
                     self.execute_return()?;
                     return Ok(());
                 }
-                op if op == Opcode::CallNative as u8 => {
-                    self.execute_native_call(code)?;
-                }
-                _ => bail!("Unknown opcode: {opcode}"),
+                Ok(Opcode::CallNative) => self.execute_native_call(code)?,
+
+                Err(_) => bail!("Unknown opcode: {opcode}"),
             }
         }
 

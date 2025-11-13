@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.100"
 clap = { version = "4.5.51", features = ["derive"] }
+num_enum = "0.7.5"
 pest = "2.8.3"
 pest_derive = "2.8.3"
 thiserror = "2.0.17"

@@ -50,11 +50,10 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
             let mut left = build_ast(pairs.next().unwrap())?;
 
             while let Some(op) = pairs.next() {
-                let op = match op.as_rule() {
-                    Rule::add => "+",
-                    Rule::sub => "-",
-                    _ => unreachable!(),
-                };
+                if !matches!(op.as_rule(), Rule::op) {
+                    bail!("Expected op, got: {op:?}");
+                }
+                let op = op.as_str().trim();
                 let right = build_ast(pairs.next().unwrap())?;
 
                 left = AstNode::BinaryOp(Box::new(left), op.to_string(), Box::new(right));

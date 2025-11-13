@@ -104,6 +104,8 @@ impl Compiler {
         match op {
             "+" => self.emit_opcode(Opcode::Add),
             "-" => self.emit_opcode(Opcode::Sub),
+            "*" => self.emit_opcode(Opcode::Mul),
+            "/" => self.emit_opcode(Opcode::Div),
             _ => anyhow::bail!("Unknown operator: {op}"),
         }
 
@@ -175,6 +177,7 @@ impl Compiler {
             code: vec![],
         });
         self.locals = HashMap::new();
+        self.next_local = 0;
 
         for arg in args {
             let idx = self.next_local;
@@ -207,15 +210,13 @@ impl Compiler {
                 );
             }
 
-            let name_idx = self.add_constant(Constant::String(name.to_string()));
-
             for arg in args.iter() {
                 self.compile_node(arg.clone())?;
                 self.pop_stack();
             }
 
             self.emit_opcode(Opcode::Call);
-            self.emit_u32(name_idx);
+            self.emit_u32(symbol.index);
             self.emit_byte(args.len() as u8);
 
             if symbol.returns {

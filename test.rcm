@@ -1,5 +1,9 @@
 fn main() {
-  print(add(5, 7));
+  print(add(5, sub(10, 3)));
+}
+
+fn sub(a, b) {
+  return a - b;
 }
 
 fn add(a, b) {

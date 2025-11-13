@@ -1,9 +1,7 @@
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 number = { ASCII_DIGIT+ }
 ident = { ASCII_ALPHA+ }
-op = _{ add | sub }
-add = { "+" }
-sub = { "-" }
+op = { "+" | "-" | "*" | "/" }
 expr = { term ~ (op ~ term)* }
 term = _{ number | call | ident | "(" ~ expr ~ ")" }
 call = { ident ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }

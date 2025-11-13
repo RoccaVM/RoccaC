@@ -6,6 +6,8 @@ use crate::parser::AstNode;
 
 pub struct SymbolRegistry {
     functions: HashMap<String, FunctionSymbol>,
+
+    current_fn_index: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -13,6 +15,7 @@ pub struct FunctionSymbol {
     pub name: String,
     pub arity: u8,
     pub returns: bool,
+    pub index: u32,
 }
 
 impl Default for SymbolRegistry {
@@ -25,6 +28,8 @@ impl SymbolRegistry {
     pub fn new() -> Self {
         Self {
             functions: HashMap::new(),
+
+            current_fn_index: 0,
         }
     }
 
@@ -46,8 +51,11 @@ impl SymbolRegistry {
                         name,
                         arity: args.len() as u8,
                         returns: ret == 1,
+                        index: self.current_fn_index,
                     },
                 );
+
+                self.current_fn_index += 1;
 
                 Ok(())
             }

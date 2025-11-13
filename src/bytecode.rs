@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 
 use anyhow::{Ok, Result};
+use num_enum::TryFromPrimitive;
 
 pub const MAGIC: u32 = 0x424D4352;
 pub const VERSION: u16 = 1;
@@ -35,6 +36,7 @@ pub struct Function {
     pub code: Vec<u8>,
 }
 
+#[derive(Eq, PartialEq, TryFromPrimitive, Debug)]
 #[repr(u8)]
 pub enum Opcode {
     // Stack
@@ -52,6 +54,8 @@ pub enum Opcode {
     // Aritmetic
     Add = 0x30,
     Sub = 0x31,
+    Mul = 0x32,
+    Div = 0x34,
 
     // Logic
     And = 0x40,
