@@ -118,6 +118,7 @@ impl Compiler {
             "*" => self.emit_opcode(Opcode::Mul),
             "/" => self.emit_opcode(Opcode::Div),
             "&&" => self.emit_opcode(Opcode::And),
+            "||" => self.emit_opcode(Opcode::Or),
             _ => anyhow::bail!("Unknown operator: {op}"),
         }
 

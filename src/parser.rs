@@ -47,6 +47,23 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
         Rule::string => Ok(AstNode::String(unescape_string(
             pair.as_str().trim_matches('"'),
         )?)),
+        Rule::logic => {
+            let mut pairs = pair.into_inner();
+            if !(pairs.len() - 1).is_multiple_of(2) {
+                return Err(ParserError::WrongPairCount(3, pairs.len()).into());
+            }
+
+            let mut left = build_ast(pairs.next().unwrap())?;
+
+            while let Some(op) = pairs.next() {
+                let op = op.as_str().trim().to_string();
+                let right = build_ast(pairs.next().unwrap())?;
+
+                left = AstNode::BinaryOp(Box::new(left), op, Box::new(right))
+            }
+
+            Ok(left)
+        }
         Rule::comparison => {
             let mut pairs = pair.into_inner();
             if !(pairs.len() - 1).is_multiple_of(2) {

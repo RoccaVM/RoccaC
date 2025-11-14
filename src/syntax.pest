@@ -9,7 +9,7 @@ char = {
     | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
     | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
-call = { ident ~ "(" ~ (comparison ~ ("," ~ comparison)*)? ~ ")" }
+call = { ident ~ "(" ~ (logic ~ ("," ~ logic)*)? ~ ")" }
 
 PLUS = @{ "+" }
 MINUS = @{ "-" }
@@ -21,7 +21,7 @@ BANG = @{ "!" }
 expr = { term ~ ((PLUS | MINUS) ~ term)* }
 term = { factor ~ ((STAR | SLASH | PERCENT) ~ factor)* }
 factor = { ((MINUS | BANG) ~ primary) | primary }
-primary = { "(" ~ comparison ~ ")" | call | number | ident | string }
+primary = { "(" ~ logic ~ ")" | call | number | ident | string }
 
 GT = @{ ">" }
 LT = @{ "<" }
@@ -33,9 +33,14 @@ LTE = @{ "<=" }
 comparison_op = { GT | LT | EQ | NE | GTE | LTE }
 comparison = { expr ~ (comparison_op ~ expr)* }
 
-let_stmt = { "let" ~ ident ~ "=" ~ comparison }
-assign_stmt = { ident ~ "=" ~ comparison }
-return_stmt = { "return" ~ comparison? }
+AND = @{ "&&" }
+OR = @{ "||" }
+logical_op = { AND | OR }
+logic = { comparison ~ (logical_op ~ comparison)* }
+
+let_stmt = { "let" ~ ident ~ "=" ~ logic }
+assign_stmt = { ident ~ "=" ~ logic }
+return_stmt = { "return" ~ logic? }
 
 fn_def = { "fn" ~ ident ~ "(" ~ (ident ~ ("," ~ ident)*)? ~ ")" ~ "{" ~ stmt* ~ "}" }
 
