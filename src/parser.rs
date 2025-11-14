@@ -19,6 +19,7 @@ pub enum AstNode {
     String(String),
     Ident(String),
     BinaryOp(Box<AstNode>, String, Box<AstNode>),
+    UnaryOp(Box<AstNode>, String),
     Let(String, Box<AstNode>),
     Assign(String, Box<AstNode>),
     Return(Option<Box<AstNode>>),
@@ -54,10 +55,11 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
             let mut left = build_ast(pairs.next().unwrap())?;
 
             while let Some(op) = pairs.next() {
-                if !matches!(op.as_rule(), Rule::op) {
-                    bail!("Expected op, got: {op:?}");
-                }
-                let op = op.as_str().trim();
+                let op = match op.as_rule() {
+                    Rule::PLUS => "+",
+                    Rule::MINUS => "-",
+                    _ => bail!("Unexpected operator: {op:?}"),
+                };
                 let right = build_ast(pairs.next().unwrap())?;
 
                 left = AstNode::BinaryOp(Box::new(left), op.to_string(), Box::new(right));
@@ -65,6 +67,44 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
 
             Ok(left)
         }
+        Rule::term => {
+            let mut pairs = pair.into_inner();
+            if !(pairs.len() - 1).is_multiple_of(2) {
+                return Err(ParserError::WrongPairCount(3, pairs.len()).into());
+            }
+
+            let mut left = build_ast(pairs.next().unwrap())?;
+
+            while let Some(op) = pairs.next() {
+                let op = match op.as_rule() {
+                    Rule::STAR => "*",
+                    Rule::SLASH => "/",
+                    Rule::PERCENT => "%",
+                    _ => bail!("Unexpected operator: {op:?}"),
+                };
+                let right = build_ast(pairs.next().unwrap())?;
+
+                left = AstNode::BinaryOp(Box::new(left), op.to_string(), Box::new(right));
+            }
+
+            Ok(left)
+        }
+        Rule::factor => {
+            let mut pairs = pair.into_inner();
+            let first = pairs.next().expect("Need at least one pair");
+
+            match first.as_rule() {
+                Rule::MINUS | Rule::BANG => Ok(AstNode::UnaryOp(
+                    Box::new(build_ast(
+                        pairs.next().expect("Expected primary after factor"),
+                    )?),
+                    first.as_str().trim().to_string(),
+                )),
+                Rule::primary => build_ast(first),
+                _ => Err(anyhow::anyhow!("Unexpected rule: {:?}", first.as_rule())),
+            }
+        }
+        Rule::primary => build_ast(pair.into_inner().next().unwrap()),
         Rule::let_stmt => {
             let mut pairs = pair.into_inner();
             if pairs.len() != 2 {
@@ -144,10 +184,7 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
             Ok(AstNode::FnDef(name, args, body))
         }
         Rule::stmt => Ok(build_ast(pair.into_inner().next().unwrap())?),
-        _ => {
-            println!("{:?}", pair.as_rule());
-            unreachable!();
-        }
+        _ => Err(anyhow::anyhow!("Unexpected rule: {:?}", pair.as_rule())),
     }
 }
 

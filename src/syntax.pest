@@ -1,4 +1,5 @@
 WHITESPACE = _{ " " | "\t" | NEWLINE }
+
 number = { ASCII_DIGIT+ }
 ident = { ASCII_ALPHA+ }
 string = ${ "\"" ~ inner ~ "\"" }
@@ -8,13 +9,25 @@ char = {
     | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
     | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
-op = { "+" | "-" | "*" | "/" }
-expr = { term ~ (op ~ term)* }
-term = _{ number | call | ident | string | "(" ~ expr ~ ")" }
 call = { ident ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+
+PLUS = @{ "+" }
+MINUS = @{ "-" }
+STAR = @{ "*" }
+SLASH = @{ "/" }
+PERCENT = @{ "%" }
+BANG = @{ "!" }
+
+expr = { term ~ ((PLUS | MINUS) ~ term)* }
+term = { factor ~ ((STAR | SLASH | PERCENT) ~ factor)* }
+factor = { ((MINUS | BANG) ~ primary) | primary }
+primary = { "(" ~ expr ~ ")" | call | number | ident | string }
+
 let_stmt = { "let" ~ ident ~ "=" ~ expr }
 assign_stmt = { ident ~ "=" ~ expr }
 return_stmt = { "return" ~ expr? }
+
 fn_def = { "fn" ~ ident ~ "(" ~ (ident ~ ("," ~ ident)*)? ~ ")" ~ "{" ~ stmt* ~ "}" }
+
 stmt = { (let_stmt | assign_stmt | return_stmt | expr) ~ ";" }
 prog = _{ (fn_def | stmt)* }

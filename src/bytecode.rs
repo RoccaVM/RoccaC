@@ -57,6 +57,7 @@ pub enum Opcode {
     // Consts
     ConstI64 = 0x10,
     ConstString = 0x12,
+    TinyInt = 0x13,
 
     // Locals
     LoadLocal = 0x20,
@@ -67,6 +68,7 @@ pub enum Opcode {
     Sub = 0x31,
     Mul = 0x32,
     Div = 0x34,
+    Mod = 0x35,
 
     // Logic
     And = 0x40,

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{Ok, Result, bail};
+use anyhow::{Result, bail};
 
 use crate::{
     bytecode::{BytecodeFile, Constant, Function, Opcode},
@@ -70,6 +70,7 @@ impl Compiler {
             AstNode::String(val) => self.compile_string(val)?,
             AstNode::Ident(ident) => self.compile_load_var(&ident)?,
             AstNode::BinaryOp(left, op, right) => self.compile_binary_op(*left, &op, *right)?,
+            AstNode::UnaryOp(n, op) => self.compile_unary_op(*n, &op)?,
             AstNode::Let(name, expr) => self.compile_let(&name, *expr)?,
             AstNode::Assign(name, expr) => self.compile_assign(&name, *expr)?,
             AstNode::Call(name, args) => self.compile_function_call(&name, args)?,
@@ -120,6 +121,26 @@ impl Compiler {
 
         self.pop_stack();
         Ok(())
+    }
+
+    fn compile_unary_op(&mut self, n: AstNode, op: &str) -> Result<()> {
+        match op {
+            "-" => {
+                self.emit_opcode(Opcode::TinyInt);
+                self.emit_byte(0);
+                self.push_stack();
+                self.compile_node(n)?;
+                self.emit_opcode(Opcode::Sub);
+                self.pop_stack();
+                Ok(())
+            }
+            "!" => {
+                self.compile_node(n)?;
+                self.emit_opcode(Opcode::Not);
+                Ok(())
+            }
+            _ => bail!("Unknown unary op: {op}"),
+        }
     }
 
     fn compile_let(&mut self, name: &str, expr: AstNode) -> Result<()> {

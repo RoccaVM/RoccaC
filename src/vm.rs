@@ -116,6 +116,10 @@ impl VM {
                         bail!("Expected string constant");
                     }
                 }
+                Ok(Opcode::TinyInt) => {
+                    let val = self.read_byte(code)?;
+                    self.stack.push(Value::Integer(val as i64));
+                }
                 Ok(Opcode::LoadLocal) => {
                     let index = self.read_u16(code)? as usize;
                     if index >= self.locals.len() {
@@ -139,10 +143,11 @@ impl VM {
                 Ok(Opcode::Sub) => self.binary_op(|a, b| a - b)?,
                 Ok(Opcode::Mul) => self.binary_op(|a, b| a * b)?,
                 Ok(Opcode::Div) => self.binary_op(|a, b| a / b)?,
+                Ok(Opcode::Mod) => self.binary_op(|a, b| a % b)?,
 
                 Ok(Opcode::And) => self.comparison_op(|a, b| a != 0 && b != 0)?,
                 Ok(Opcode::Or) => self.comparison_op(|a, b| a != 0 || b != 0)?,
-                Ok(Opcode::Not) => self.bitwise_op(|a| !a)?,
+                Ok(Opcode::Not) => self.unary_op(|a| !a)?,
 
                 Ok(Opcode::Eq) => self.comparison_op(|a, b| a == b)?,
                 Ok(Opcode::Ne) => self.comparison_op(|a, b| a != b)?,
@@ -306,7 +311,7 @@ impl VM {
         Ok(())
     }
 
-    fn bitwise_op<F>(&mut self, f: F) -> Result<()>
+    fn unary_op<F>(&mut self, f: F) -> Result<()>
     where
         F: FnOnce(i64) -> i64,
     {
