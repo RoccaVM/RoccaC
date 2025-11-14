@@ -61,6 +61,8 @@ fn main() -> Result<()> {
 
     let tree = parser::parse(contents.as_str())?;
 
+    //println!("{tree:#?}");
+
     let mut compiler = compiler::Compiler::default();
     let mut bytecode = compiler.compile(tree)?;
     bytecode.header.flags = bytecode.header.flags.with_debug_symbols(cli.debug);

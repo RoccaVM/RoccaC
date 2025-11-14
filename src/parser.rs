@@ -1,4 +1,4 @@
-use anyhow::{Ok, Result, bail};
+use anyhow::{Result, bail};
 use pest::{Parser, iterators::Pair};
 use pest_derive::Parser;
 use thiserror::Error;
@@ -16,6 +16,7 @@ pub enum ParserError {
 #[derive(Clone, Debug)]
 pub enum AstNode {
     Number(i64),
+    String(String),
     Ident(String),
     BinaryOp(Box<AstNode>, String, Box<AstNode>),
     Let(String, Box<AstNode>),
@@ -41,6 +42,9 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
     match pair.as_rule() {
         Rule::number => Ok(AstNode::Number(pair.as_str().parse()?)),
         Rule::ident => Ok(AstNode::Ident(pair.as_str().trim().to_string())),
+        Rule::string => Ok(AstNode::String(unescape_string(
+            pair.as_str().trim_matches('"'),
+        )?)),
         Rule::expr => {
             let mut pairs = pair.into_inner();
             if !(pairs.len() - 1).is_multiple_of(2) {
@@ -145,4 +149,52 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
             unreachable!();
         }
     }
+}
+
+fn unescape_string(input: &str) -> Result<String> {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => output.push('\n'),
+                Some('r') => output.push('\r'),
+                Some('t') => output.push('\t'),
+                Some('b') => output.push('\u{0008}'),
+                Some('f') => output.push('\u{000C}'),
+                Some('"') => output.push('"'),
+                Some('\\') => output.push('\\'),
+                Some('/') => output.push('/'),
+
+                Some('u') => {
+                    let hex_chars: String = chars.by_ref().take(4).collect();
+                    if hex_chars.len() == 4 {
+                        match u16::from_str_radix(&hex_chars, 16) {
+                            Ok(code) => match char::from_u32(code as u32) {
+                                Some(uni_char) => output.push(uni_char),
+                                None => bail!("Invalid Unicode codepoint in \\uXXXX escape"),
+                            },
+                            Err(_) => bail!("Invalid hexadecimal in \\uXXXX escape"),
+                        }
+                    } else {
+                        bail!("Incomplete \\uXXXX escape sequence");
+                    }
+                }
+
+                Some(other) => {
+                    output.push('\\');
+                    output.push(other);
+                }
+                None => {
+                    output.push('\\');
+                    break;
+                }
+            }
+        } else {
+            output.push(c);
+        }
+    }
+
+    Ok(output)
 }

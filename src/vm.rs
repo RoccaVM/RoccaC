@@ -9,6 +9,7 @@ use crate::{
 pub enum Value {
     Integer(i64),
     Boolean(bool),
+    String(String),
     Null,
 }
 
@@ -24,6 +25,7 @@ impl Value {
         match self {
             Value::Integer(n) => n.to_string(),
             Value::Boolean(b) => b.to_string(),
+            Value::String(s) => s.clone(),
             Value::Null => "null".to_string(),
         }
     }
@@ -103,6 +105,15 @@ impl VM {
                         self.stack.push(Value::Integer(*n));
                     } else {
                         bail!("Expected Integer constant");
+                    }
+                }
+                Ok(Opcode::ConstString) => {
+                    let index = self.read_u32(code)?;
+                    let constant = &self.bytecode.const_pool[index as usize];
+                    if let Constant::String(s) = constant {
+                        self.stack.push(Value::String(s.clone()));
+                    } else {
+                        bail!("Expected string constant");
                     }
                 }
                 Ok(Opcode::LoadLocal) => {

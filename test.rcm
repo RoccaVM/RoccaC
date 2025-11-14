@@ -1,5 +1,5 @@
 fn main() {
-  print(add(div(mul(10, 2), 4), sub(10, 3)));
+  print(add(div(mul(10, 2), 4), sub(10, 3)), "\n");
 }
 
 fn div(a, b) {

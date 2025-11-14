@@ -56,6 +56,7 @@ pub enum Opcode {
 
     // Consts
     ConstI64 = 0x10,
+    ConstString = 0x12,
 
     // Locals
     LoadLocal = 0x20,

@@ -56,8 +56,8 @@ fn native_print(args: &[Value]) -> Result<Value> {
         return Ok(Value::Null);
     }
 
-    let output = args[0].format();
-    print!("{output}");
+    let output: Vec<String> = args.iter().map(|a| a.format()).collect();
+    print!("{}", output.join(" "));
     io::stdout().flush()?;
     Ok(Value::Null)
 }

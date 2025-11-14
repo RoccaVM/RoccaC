@@ -67,6 +67,7 @@ impl Compiler {
     fn compile_node(&mut self, node: AstNode) -> Result<()> {
         match node {
             AstNode::Number(val) => self.compile_number(val)?,
+            AstNode::String(val) => self.compile_string(val)?,
             AstNode::Ident(ident) => self.compile_load_var(&ident)?,
             AstNode::BinaryOp(left, op, right) => self.compile_binary_op(*left, &op, *right)?,
             AstNode::Let(name, expr) => self.compile_let(&name, *expr)?,
@@ -81,6 +82,14 @@ impl Compiler {
     fn compile_number(&mut self, val: i64) -> Result<()> {
         let index = self.add_constant(Constant::Int(val));
         self.emit_opcode(Opcode::ConstI64);
+        self.emit_u32(index);
+        self.push_stack();
+        Ok(())
+    }
+
+    fn compile_string(&mut self, val: String) -> Result<()> {
+        let index = self.add_constant(Constant::String(val));
+        self.emit_opcode(Opcode::ConstString);
         self.emit_u32(index);
         self.push_stack();
         Ok(())

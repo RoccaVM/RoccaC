@@ -1,9 +1,16 @@
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 number = { ASCII_DIGIT+ }
 ident = { ASCII_ALPHA+ }
+string = ${ "\"" ~ inner ~ "\"" }
+inner = @{ char* }
+char = {
+    !("\"" | "\\" | NEWLINE) ~ ANY
+    | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
 op = { "+" | "-" | "*" | "/" }
 expr = { term ~ (op ~ term)* }
-term = _{ number | call | ident | "(" ~ expr ~ ")" }
+term = _{ number | call | ident | string | "(" ~ expr ~ ")" }
 call = { ident ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
 let_stmt = { "let" ~ ident ~ "=" ~ expr }
 assign_stmt = { ident ~ "=" ~ expr }
