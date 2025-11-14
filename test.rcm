@@ -1,5 +1,9 @@
 fn main() {
   print(add(div(mul(10, 2), 4), sub(10, 3)), "\n");
+
+  print("Hello, World!\n");
+
+  print(5 == 5, 5==6, 5 > 6, 5 < 6 < 7, "\n");
 }
 
 fn div(a, b) {

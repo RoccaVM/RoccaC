@@ -17,6 +17,7 @@ impl Value {
     fn as_i64(&self) -> Result<i64> {
         match self {
             Value::Integer(val) => Ok(*val),
+            Value::Boolean(val) => Ok(if *val { 1 } else { 0 }),
             _ => bail!("Unable to convert from {self:?} to an Integer"),
         }
     }
@@ -151,6 +152,10 @@ impl VM {
 
                 Ok(Opcode::Eq) => self.comparison_op(|a, b| a == b)?,
                 Ok(Opcode::Ne) => self.comparison_op(|a, b| a != b)?,
+                Ok(Opcode::Gt) => self.comparison_op(|a, b| a > b)?,
+                Ok(Opcode::Lt) => self.comparison_op(|a, b| a < b)?,
+                Ok(Opcode::Gte) => self.comparison_op(|a, b| a >= b)?,
+                Ok(Opcode::Lte) => self.comparison_op(|a, b| a <= b)?,
 
                 Ok(Opcode::Jump) => {
                     let loc = self.read_u32(code)? as usize;

@@ -78,6 +78,10 @@ pub enum Opcode {
     // Compare
     Eq = 0x50,
     Ne = 0x51,
+    Gt = 0x52,
+    Lt = 0x53,
+    Gte = 0x54,
+    Lte = 0x55,
 
     // Flow
     Jump = 0x60,

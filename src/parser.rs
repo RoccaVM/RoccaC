@@ -20,6 +20,7 @@ pub enum AstNode {
     Ident(String),
     BinaryOp(Box<AstNode>, String, Box<AstNode>),
     UnaryOp(Box<AstNode>, String),
+    Comparison(Box<AstNode>, String, Box<AstNode>),
     Let(String, Box<AstNode>),
     Assign(String, Box<AstNode>),
     Return(Option<Box<AstNode>>),
@@ -46,6 +47,44 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
         Rule::string => Ok(AstNode::String(unescape_string(
             pair.as_str().trim_matches('"'),
         )?)),
+        Rule::comparison => {
+            let mut pairs = pair.into_inner();
+            if !(pairs.len() - 1).is_multiple_of(2) {
+                return Err(ParserError::WrongPairCount(3, pairs.len()).into());
+            }
+
+            let left = build_ast(pairs.next().unwrap())?;
+
+            let first_pair = match pairs.next() {
+                Some(p) => p,
+                None => return Ok(left),
+            };
+
+            let current_op = first_pair.as_str().trim().to_string();
+            let mut current_right = build_ast(pairs.next().unwrap())?;
+
+            let mut final_cmp = AstNode::Comparison(
+                Box::new(left.clone()),
+                current_op,
+                Box::new(current_right.clone()),
+            );
+
+            while let Some(op) = pairs.next() {
+                let next_left = current_right;
+                let next_op = op.as_str().trim().to_string();
+                let next_right = build_ast(pairs.next().unwrap())?;
+
+                let next_cmp =
+                    AstNode::Comparison(Box::new(next_left), next_op, Box::new(next_right.clone()));
+
+                final_cmp =
+                    AstNode::BinaryOp(Box::new(final_cmp), "&&".to_string(), Box::new(next_cmp));
+
+                current_right = next_right;
+            }
+
+            Ok(final_cmp)
+        }
         Rule::expr => {
             let mut pairs = pair.into_inner();
             if !(pairs.len() - 1).is_multiple_of(2) {

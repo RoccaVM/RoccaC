@@ -1,6 +1,6 @@
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 
-number = { ASCII_DIGIT+ }
+number = @{ ASCII_DIGIT+ }
 ident = { ASCII_ALPHA+ }
 string = ${ "\"" ~ inner ~ "\"" }
 inner = @{ char* }
@@ -9,7 +9,7 @@ char = {
     | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
     | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
-call = { ident ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+call = { ident ~ "(" ~ (comparison ~ ("," ~ comparison)*)? ~ ")" }
 
 PLUS = @{ "+" }
 MINUS = @{ "-" }
@@ -21,13 +21,23 @@ BANG = @{ "!" }
 expr = { term ~ ((PLUS | MINUS) ~ term)* }
 term = { factor ~ ((STAR | SLASH | PERCENT) ~ factor)* }
 factor = { ((MINUS | BANG) ~ primary) | primary }
-primary = { "(" ~ expr ~ ")" | call | number | ident | string }
+primary = { "(" ~ comparison ~ ")" | call | number | ident | string }
 
-let_stmt = { "let" ~ ident ~ "=" ~ expr }
-assign_stmt = { ident ~ "=" ~ expr }
-return_stmt = { "return" ~ expr? }
+GT = @{ ">" }
+LT = @{ "<" }
+EQ = @{ "==" }
+NE = @{ "!=" }
+GTE = @{ ">=" }
+LTE = @{ "<=" }
+
+comparison_op = { GT | LT | EQ | NE | GTE | LTE }
+comparison = { expr ~ (comparison_op ~ expr)* }
+
+let_stmt = { "let" ~ ident ~ "=" ~ comparison }
+assign_stmt = { ident ~ "=" ~ comparison }
+return_stmt = { "return" ~ comparison? }
 
 fn_def = { "fn" ~ ident ~ "(" ~ (ident ~ ("," ~ ident)*)? ~ ")" ~ "{" ~ stmt* ~ "}" }
 
-stmt = { (let_stmt | assign_stmt | return_stmt | expr) ~ ";" }
+stmt = { (let_stmt | assign_stmt | return_stmt | comparison) ~ ";" }
 prog = _{ (fn_def | stmt)* }

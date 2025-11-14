@@ -71,6 +71,7 @@ impl Compiler {
             AstNode::Ident(ident) => self.compile_load_var(&ident)?,
             AstNode::BinaryOp(left, op, right) => self.compile_binary_op(*left, &op, *right)?,
             AstNode::UnaryOp(n, op) => self.compile_unary_op(*n, &op)?,
+            AstNode::Comparison(left, op, right) => self.compile_comparison(*left, &op, *right)?,
             AstNode::Let(name, expr) => self.compile_let(&name, *expr)?,
             AstNode::Assign(name, expr) => self.compile_assign(&name, *expr)?,
             AstNode::Call(name, args) => self.compile_function_call(&name, args)?,
@@ -116,6 +117,7 @@ impl Compiler {
             "-" => self.emit_opcode(Opcode::Sub),
             "*" => self.emit_opcode(Opcode::Mul),
             "/" => self.emit_opcode(Opcode::Div),
+            "&&" => self.emit_opcode(Opcode::And),
             _ => anyhow::bail!("Unknown operator: {op}"),
         }
 
@@ -141,6 +143,23 @@ impl Compiler {
             }
             _ => bail!("Unknown unary op: {op}"),
         }
+    }
+
+    fn compile_comparison(&mut self, left: AstNode, op: &str, right: AstNode) -> Result<()> {
+        self.compile_node(left)?;
+        self.compile_node(right)?;
+
+        match op {
+            ">" => self.emit_opcode(Opcode::Gt),
+            "<" => self.emit_opcode(Opcode::Lt),
+            "==" => self.emit_opcode(Opcode::Eq),
+            "!=" => self.emit_opcode(Opcode::Ne),
+            ">=" => self.emit_opcode(Opcode::Gte),
+            "<=" => self.emit_opcode(Opcode::Lte),
+            _ => bail!("Unknown comparison: {op}"),
+        }
+
+        Ok(())
     }
 
     fn compile_let(&mut self, name: &str, expr: AstNode) -> Result<()> {

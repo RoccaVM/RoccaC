@@ -65,6 +65,14 @@ impl Renderer {
                     inline_info = format!("Load const #{val}");
                     i += 4;
                 }
+                Opcode::ConstString => {
+                    let val_bytes = &func.code[i..i + 4];
+                    bytes.extend_from_slice(val_bytes);
+                    let val = u32::from_le_bytes(val_bytes.try_into().unwrap());
+                    operands.push(format!("#{val}"));
+                    inline_info = format!("Load const #{val}");
+                    i += 4;
+                }
                 Opcode::LoadLocal | Opcode::StoreLocal => {
                     let val_bytes = &func.code[i..i + 2];
                     bytes.extend_from_slice(val_bytes);
