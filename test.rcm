@@ -4,6 +4,12 @@ fn main() {
   print("Hello, World!\n");
 
   print(5 == 5, 5==6, 5 > 6, 5 < 6 < 7, "\n");
+
+  if 5 == 7 {
+    print("It does\n");
+  } else {
+    print("It does not\n");
+  }
 }
 
 fn div(a, b) {

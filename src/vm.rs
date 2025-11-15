@@ -22,6 +22,14 @@ impl Value {
         }
     }
 
+    fn as_bool(&self) -> Result<bool> {
+        match self {
+            Value::Boolean(val) => Ok(*val),
+            Value::Integer(val) => Ok(*val != 0),
+            _ => bail!("Unable to convert from {self:?} to a Boolean"),
+        }
+    }
+
     pub fn format(&self) -> String {
         match self {
             Value::Integer(n) => n.to_string(),
@@ -170,6 +178,23 @@ impl VM {
                     return Ok(());
                 }
                 Ok(Opcode::CallNative) => self.execute_native_call(code)?,
+                Ok(Opcode::CondJump) => {
+                    let loc = self.read_u32(code)? as usize;
+                    if loc > code.len() - 1 {
+                        bail!("Invalid jump address");
+                    }
+
+                    let cond = self
+                        .stack
+                        .pop()
+                        .expect("Conditional Jump requires at least one value on the stack.")
+                        .as_bool()
+                        .unwrap();
+
+                    if cond {
+                        self.pc = loc;
+                    }
+                }
 
                 Err(_) => bail!("Unknown opcode: {opcode}"),
             }

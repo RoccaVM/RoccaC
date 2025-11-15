@@ -77,6 +77,9 @@ impl Compiler {
             AstNode::Call(name, args) => self.compile_function_call(&name, args)?,
             AstNode::Return(expr) => self.compile_return(expr)?,
             AstNode::FnDef(name, args, body) => self.compile_function_def(&name, args, body)?,
+            AstNode::If(conditional, unconditional) => {
+                self.compile_if(conditional, unconditional)?
+            }
         }
         Ok(())
     }
@@ -199,6 +202,60 @@ impl Compiler {
             self.compile_node(*expr)?;
         }
         self.emit_opcode(Opcode::Ret);
+        Ok(())
+    }
+
+    fn compile_if(
+        &mut self,
+        conditional: Vec<(Box<AstNode>, Vec<AstNode>)>,
+        unconditional: Vec<AstNode>,
+    ) -> Result<()> {
+        let mut write_start_to = Vec::new();
+        for branch in conditional.clone() {
+            self.compile_node(*branch.0)?;
+            self.emit_opcode(Opcode::CondJump);
+            write_start_to.push(self.current_function.as_ref().unwrap().code.len());
+            self.emit_u32(u32::MAX);
+        }
+        self.emit_opcode(Opcode::Jump);
+        write_start_to.push(self.current_function.as_ref().unwrap().code.len());
+        self.emit_u32(u32::MAX);
+
+        let mut write_end_to = Vec::new();
+        for (i, branch) in conditional.iter().enumerate() {
+            let addr_to_write =
+                (self.current_function.as_ref().unwrap().code.len() as u32).to_le_bytes();
+            let offset = write_start_to[i];
+            self.current_function.as_mut().unwrap().code[offset..(4 + offset)]
+                .copy_from_slice(&addr_to_write[..4]);
+
+            for node in branch.1.clone() {
+                self.compile_node(node)?;
+            }
+
+            self.emit_opcode(Opcode::Jump);
+            write_end_to.push(self.current_function.as_ref().unwrap().code.len());
+            self.emit_u32(u32::MAX);
+        }
+
+        let mut addr_to_write = (self.current_function.as_ref().unwrap().code.len()).to_le_bytes();
+        let offset = *write_start_to.last().unwrap();
+        self.current_function.as_mut().unwrap().code[offset..(4 + offset)]
+            .copy_from_slice(&addr_to_write[..4]);
+
+        if !unconditional.is_empty() {
+            for node in unconditional {
+                self.compile_node(node)?;
+            }
+
+            addr_to_write = (self.current_function.as_ref().unwrap().code.len()).to_le_bytes();
+        }
+
+        for offset in write_end_to {
+            self.current_function.as_mut().unwrap().code[offset..(4 + offset)]
+                .copy_from_slice(&addr_to_write[..4]);
+        }
+
         Ok(())
     }
 

@@ -26,6 +26,7 @@ pub enum AstNode {
     Return(Option<Box<AstNode>>),
     Call(String, Vec<AstNode>),
     FnDef(String, Vec<String>, Vec<AstNode>),
+    If(Vec<(Box<AstNode>, Vec<AstNode>)>, Vec<AstNode>),
 }
 
 pub fn parse(source: &str) -> Result<Vec<AstNode>> {
@@ -41,6 +42,7 @@ pub fn parse(source: &str) -> Result<Vec<AstNode>> {
 }
 
 fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
+    println!("{:?}", pair.as_rule());
     match pair.as_rule() {
         Rule::number => Ok(AstNode::Number(pair.as_str().parse()?)),
         Rule::ident => Ok(AstNode::Ident(pair.as_str().trim().to_string())),
@@ -193,6 +195,38 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
                 let expr = build_ast(pairs.next().unwrap())?;
                 Ok(AstNode::Return(Some(Box::new(expr))))
             }
+        }
+        Rule::if_stmt => {
+            println!("Parsing if");
+            let mut pairs = pair.into_inner();
+            let condition = build_ast(pairs.next().expect("If statement must have condition"))?;
+
+            let mut cond_pairs = Vec::new();
+            cond_pairs.push((Box::new(condition), Vec::new()));
+            let mut uncond_stmts = Vec::new();
+            for p in pairs {
+                match p.as_rule() {
+                    Rule::else_if_stmt => {
+                        let mut pairs = p.into_inner();
+                        let condition = build_ast(
+                            pairs.next().expect("If-Else statement must have condition"),
+                        )?;
+                        cond_pairs.push((Box::new(condition), Vec::new()));
+
+                        for p in pairs {
+                            cond_pairs.last_mut().unwrap().1.push(build_ast(p)?);
+                        }
+                    }
+                    Rule::else_stmt => {
+                        for s in p.into_inner() {
+                            uncond_stmts.push(build_ast(s)?);
+                        }
+                    }
+                    _ => cond_pairs.last_mut().unwrap().1.push(build_ast(p)?),
+                }
+            }
+
+            Ok(AstNode::If(cond_pairs, uncond_stmts))
         }
         Rule::call => {
             let mut pairs = pair.into_inner();

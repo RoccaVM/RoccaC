@@ -42,7 +42,14 @@ let_stmt = { "let" ~ ident ~ "=" ~ logic }
 assign_stmt = { ident ~ "=" ~ logic }
 return_stmt = { "return" ~ logic? }
 
+if_stmt = { "if" ~ logic ~ "{" ~ stmt* ~ "}" ~ else_if_stmt* ~ else_stmt? }
+else_if_stmt = { "else if" ~ logic ~ "{" ~ stmt* ~ "}" }
+else_stmt = { "else {" ~ stmt* ~ "}" }
+
 fn_def = { "fn" ~ ident ~ "(" ~ (ident ~ ("," ~ ident)*)? ~ ")" ~ "{" ~ stmt* ~ "}" }
 
-stmt = { (let_stmt | assign_stmt | return_stmt | comparison) ~ ";" }
-prog = _{ (fn_def | stmt)* }
+compound_stmt = _{ fn_def | if_stmt }
+simple_stmt = _{ let_stmt | assign_stmt | return_stmt | logic }
+
+stmt = { (simple_stmt ~ ";") | compound_stmt }
+prog = _{ stmt* }

@@ -61,7 +61,7 @@ fn main() -> Result<()> {
 
     let tree = parser::parse(contents.as_str())?;
 
-    //println!("{tree:#?}");
+    println!("{tree:#?}");
 
     let mut compiler = compiler::Compiler::default();
     let mut bytecode = compiler.compile(tree)?;
