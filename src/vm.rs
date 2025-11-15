@@ -80,6 +80,8 @@ impl VM {
 
         self.current_function = entry_idx;
 
+        self.stack = Vec::with_capacity(main_func.max_stack as usize);
+
         self.execute_function()?;
         Ok(())
     }
