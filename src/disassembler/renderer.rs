@@ -90,6 +90,14 @@ impl Renderer {
                     inline_info = format!("Call fn#{idx} with {argc} args");
                     i += 5;
                 }
+                Opcode::Jump | Opcode::CondJump => {
+                    let val_bytes = &func.code[i..i + 4];
+                    bytes.extend_from_slice(val_bytes);
+                    let addr = u32::from_le_bytes(val_bytes[..4].try_into().unwrap());
+                    operands.push(format!("jmp[{addr}]"));
+                    inline_info = format!("Jump to {addr}");
+                    i += 4;
+                }
                 _ => {}
             }
 

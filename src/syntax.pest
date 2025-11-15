@@ -30,7 +30,7 @@ NE = @{ "!=" }
 GTE = @{ ">=" }
 LTE = @{ "<=" }
 
-comparison_op = { GT | LT | EQ | NE | GTE | LTE }
+comparison_op = { GTE | LTE | EQ | NE | GT | LT }
 comparison = { expr ~ (comparison_op ~ expr)* }
 
 AND = @{ "&&" }
@@ -46,9 +46,11 @@ if_stmt = { "if" ~ logic ~ "{" ~ stmt* ~ "}" ~ else_if_stmt* ~ else_stmt? }
 else_if_stmt = { "else if" ~ logic ~ "{" ~ stmt* ~ "}" }
 else_stmt = { "else {" ~ stmt* ~ "}" }
 
+while_loop = { "while" ~ logic ~ "{" ~ stmt* ~ "}" }
+
 fn_def = { "fn" ~ ident ~ "(" ~ (ident ~ ("," ~ ident)*)? ~ ")" ~ "{" ~ stmt* ~ "}" }
 
-compound_stmt = _{ fn_def | if_stmt }
+compound_stmt = _{ fn_def | if_stmt | while_loop }
 simple_stmt = _{ let_stmt | assign_stmt | return_stmt | logic }
 
 stmt = { (simple_stmt ~ ";") | compound_stmt }

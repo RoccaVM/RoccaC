@@ -27,6 +27,7 @@ pub enum AstNode {
     Call(String, Vec<AstNode>),
     FnDef(String, Vec<String>, Vec<AstNode>),
     If(Vec<(Box<AstNode>, Vec<AstNode>)>, Vec<AstNode>),
+    While(Box<AstNode>, Vec<AstNode>),
 }
 
 pub fn parse(source: &str) -> Result<Vec<AstNode>> {
@@ -42,7 +43,6 @@ pub fn parse(source: &str) -> Result<Vec<AstNode>> {
 }
 
 fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
-    println!("{:?}", pair.as_rule());
     match pair.as_rule() {
         Rule::number => Ok(AstNode::Number(pair.as_str().parse()?)),
         Rule::ident => Ok(AstNode::Ident(pair.as_str().trim().to_string())),
@@ -197,7 +197,6 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
             }
         }
         Rule::if_stmt => {
-            println!("Parsing if");
             let mut pairs = pair.into_inner();
             let condition = build_ast(pairs.next().expect("If statement must have condition"))?;
 
@@ -227,6 +226,15 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
             }
 
             Ok(AstNode::If(cond_pairs, uncond_stmts))
+        }
+        Rule::while_loop => {
+            let mut pairs = pair.into_inner();
+            let condition = build_ast(pairs.next().expect("While loop must have condition"))?;
+
+            Ok(AstNode::While(
+                Box::new(condition),
+                pairs.map(|p| build_ast(p).unwrap()).collect(),
+            ))
         }
         Rule::call => {
             let mut pairs = pair.into_inner();

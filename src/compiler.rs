@@ -80,6 +80,7 @@ impl Compiler {
             AstNode::If(conditional, unconditional) => {
                 self.compile_if(conditional, unconditional)?
             }
+            AstNode::While(cond, stmts) => self.compile_while(*cond, stmts)?,
         }
         Ok(())
     }
@@ -255,6 +256,30 @@ impl Compiler {
             self.current_function.as_mut().unwrap().code[offset..(4 + offset)]
                 .copy_from_slice(&addr_to_write[..4]);
         }
+
+        Ok(())
+    }
+
+    fn compile_while(&mut self, cond: AstNode, body: Vec<AstNode>) -> Result<()> {
+        let start = self.current_function.as_ref().unwrap().code.len() as u32;
+        self.compile_node(cond)?;
+
+        self.emit_opcode(Opcode::CondJump);
+        self.emit_u32(self.current_function.as_ref().unwrap().code.len() as u32 + 9);
+        self.emit_opcode(Opcode::Jump);
+        let write_end = self.current_function.as_ref().unwrap().code.len();
+        self.emit_u32(u32::MAX);
+
+        for n in body {
+            self.compile_node(n)?;
+        }
+
+        self.emit_opcode(Opcode::Jump);
+        self.emit_u32(start);
+
+        let addr_to_write = (self.current_function.as_ref().unwrap().code.len()).to_le_bytes();
+        self.current_function.as_mut().unwrap().code[write_end..(write_end + 4)]
+            .copy_from_slice(&addr_to_write[..4]);
 
         Ok(())
     }
