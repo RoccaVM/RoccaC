@@ -1,7 +1,7 @@
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 
 number = @{ ASCII_DIGIT+ }
-ident = { ASCII_ALPHA+ }
+ident = { ASCII_ALPHA ~ ASCII_ALPHANUMERIC* }
 string = ${ "\"" ~ inner ~ "\"" }
 inner = @{ char* }
 char = {
@@ -38,7 +38,9 @@ OR = @{ "||" }
 logical_op = { AND | OR }
 logic = { comparison ~ (logical_op ~ comparison)* }
 
-let_stmt = { "let" ~ ident ~ "=" ~ logic }
+data_type = { ident ~ ("<" ~ data_type ~ ">")? }
+
+let_stmt = { "let" ~ ident ~ (":" ~ data_type)? ~ "=" ~ logic }
 assign_stmt = { ident ~ "=" ~ logic }
 return_stmt = { "return" ~ logic? }
 
@@ -48,7 +50,7 @@ else_stmt = { "else {" ~ stmt* ~ "}" }
 
 while_loop = { "while" ~ logic ~ "{" ~ stmt* ~ "}" }
 
-fn_def = { "fn" ~ ident ~ "(" ~ (ident ~ ("," ~ ident)*)? ~ ")" ~ "{" ~ stmt* ~ "}" }
+fn_def = { "fn" ~ ident ~ "(" ~ (ident ~ ":" ~ data_type ~ ("," ~ ident ~ ":" ~ data_type)*)? ~ ")" ~ ("->" ~ data_type)? ~ "{" ~ stmt* ~ "}" }
 
 compound_stmt = _{ fn_def | if_stmt | while_loop }
 simple_stmt = _{ let_stmt | assign_stmt | return_stmt | logic }

@@ -1,5 +1,5 @@
 fn main() {
-  print(add(div(mul(10, 2), 4), sub(10, 3)), "\n");
+  print(add(1,2), "\n");
 
   print("Hello, World!\n");
 
@@ -19,18 +19,6 @@ fn main() {
   print("\n");
 }
 
-fn div(a, b) {
-  return a / b;
-}
-
-fn mul(a, b) {
-  return a * b;
-}
-
-fn sub(a, b) {
-  return a - b;
-}
-
-fn add(a, b) {
+fn add(a: Int, b: Int) -> Int {
   return a + b;
 }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{Ok, Result};
 
-use crate::parser::AstNode;
+use crate::{parser::AstNode, types::Type};
 
 pub struct SymbolRegistry {
     functions: HashMap<String, FunctionSymbol>,
@@ -13,7 +13,9 @@ pub struct SymbolRegistry {
 #[derive(Clone, Debug)]
 pub struct FunctionSymbol {
     pub name: String,
+    pub return_type: Type,
     pub arity: u8,
+    pub arg_types: Vec<Type>,
     pub returns: bool,
     pub index: u32,
 }
@@ -35,7 +37,7 @@ impl SymbolRegistry {
 
     pub fn traverse(&mut self, node: AstNode) -> Result<()> {
         match node {
-            AstNode::FnDef(name, args, body) => {
+            AstNode::FnDef(name, args, return_type, body) => {
                 let mut ret = -1;
                 for n in body {
                     let found = find_return(n);
@@ -45,11 +47,22 @@ impl SymbolRegistry {
                     }
                 }
 
+                let rt = if let Some(return_type) = return_type {
+                    Type::from_string(return_type)?
+                } else {
+                    Type::Unit
+                };
+
                 self.functions.insert(
                     name.clone(),
                     FunctionSymbol {
                         name,
+                        return_type: rt,
                         arity: args.len() as u8,
+                        arg_types: args
+                            .into_iter()
+                            .map(|a| Type::from_string(a.1))
+                            .collect::<Result<Vec<Type>, anyhow::Error>>()?,
                         returns: ret == 1,
                         index: self.current_fn_index,
                     },
@@ -81,7 +94,7 @@ fn find_return(node: AstNode) -> i8 {
                 0
             }
         }
-        AstNode::FnDef(_, _, body) => {
+        AstNode::FnDef(_, _, _, body) => {
             for n in body {
                 let found = find_return(n);
                 if found != -1 {

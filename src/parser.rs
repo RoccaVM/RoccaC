@@ -21,11 +21,13 @@ pub enum AstNode {
     BinaryOp(Box<AstNode>, String, Box<AstNode>),
     UnaryOp(Box<AstNode>, String),
     Comparison(Box<AstNode>, String, Box<AstNode>),
-    Let(String, Box<AstNode>),
+    // Name, Optional data type, Assignment
+    Let(String, Option<String>, Box<AstNode>),
     Assign(String, Box<AstNode>),
     Return(Option<Box<AstNode>>),
     Call(String, Vec<AstNode>),
-    FnDef(String, Vec<String>, Vec<AstNode>),
+    // Name, Argument[(Name, Data type)], Optional return type, Body
+    FnDef(String, Vec<(String, String)>, Option<String>, Vec<AstNode>),
     If(Vec<(Box<AstNode>, Vec<AstNode>)>, Vec<AstNode>),
     While(Box<AstNode>, Vec<AstNode>),
 }
@@ -165,13 +167,20 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
         Rule::primary => build_ast(pair.into_inner().next().unwrap()),
         Rule::let_stmt => {
             let mut pairs = pair.into_inner();
-            if pairs.len() != 2 {
+            if pairs.len() != 2 && pairs.len() != 3 {
                 return Err(ParserError::WrongPairCount(2, pairs.len()).into());
             }
 
             let name = pairs.next().unwrap().as_str().trim().to_string();
-            let expr = build_ast(pairs.next().unwrap())?;
-            Ok(AstNode::Let(name, Box::new(expr)))
+            let next_pair = pairs.next().unwrap();
+            if matches!(next_pair.as_rule(), Rule::data_type) {
+                let dtype = next_pair.as_str().trim().to_string();
+                let expr = build_ast(pairs.next().unwrap())?;
+                Ok(AstNode::Let(name, Some(dtype), Box::new(expr)))
+            } else {
+                let expr = build_ast(next_pair)?;
+                Ok(AstNode::Let(name, None, Box::new(expr)))
+            }
         }
         Rule::assign_stmt => {
             let mut pairs = pair.into_inner();
@@ -266,9 +275,15 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
 
             let mut args = Vec::new();
             let mut body = Vec::new();
-            for p in pairs {
+            let mut return_type = None;
+            while let Some(p) = pairs.next() {
                 if matches!(p.as_rule(), Rule::ident) {
-                    args.push(p.as_str().trim().to_string());
+                    args.push((
+                        p.as_str().trim().to_string(),
+                        pairs.next().unwrap().as_str().trim().to_string(),
+                    ));
+                } else if matches!(p.as_rule(), Rule::data_type) {
+                    return_type = Some(p.as_str().trim().to_string())
                 } else if matches!(p.as_rule(), Rule::stmt) {
                     body.push(build_ast(p)?);
                 } else {
@@ -279,7 +294,7 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
                 }
             }
 
-            Ok(AstNode::FnDef(name, args, body))
+            Ok(AstNode::FnDef(name, args, return_type, body))
         }
         Rule::stmt => Ok(build_ast(pair.into_inner().next().unwrap())?),
         _ => Err(anyhow::anyhow!("Unexpected rule: {:?}", pair.as_rule())),

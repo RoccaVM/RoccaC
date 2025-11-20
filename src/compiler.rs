@@ -7,12 +7,13 @@ use crate::{
     native::NativeRegistry,
     parser::AstNode,
     registry::SymbolRegistry,
+    types::Type,
 };
 
 pub struct Compiler {
     bytecode: BytecodeFile,
     current_function: Option<Function>,
-    locals: HashMap<String, u16>,
+    locals: HashMap<String, (Type, u16)>,
     next_local: u16,
     max_stack: u16,
     current_stack_depth: u16,
@@ -64,55 +65,55 @@ impl Compiler {
         Ok(self.bytecode.clone())
     }
 
-    fn compile_node(&mut self, node: AstNode) -> Result<()> {
+    fn compile_node(&mut self, node: AstNode) -> Result<Type> {
         match node {
-            AstNode::Number(val) => self.compile_number(val)?,
-            AstNode::String(val) => self.compile_string(val)?,
-            AstNode::Ident(ident) => self.compile_load_var(&ident)?,
-            AstNode::BinaryOp(left, op, right) => self.compile_binary_op(*left, &op, *right)?,
-            AstNode::UnaryOp(n, op) => self.compile_unary_op(*n, &op)?,
-            AstNode::Comparison(left, op, right) => self.compile_comparison(*left, &op, *right)?,
-            AstNode::Let(name, expr) => self.compile_let(&name, *expr)?,
-            AstNode::Assign(name, expr) => self.compile_assign(&name, *expr)?,
-            AstNode::Call(name, args) => self.compile_function_call(&name, args)?,
-            AstNode::Return(expr) => self.compile_return(expr)?,
-            AstNode::FnDef(name, args, body) => self.compile_function_def(&name, args, body)?,
-            AstNode::If(conditional, unconditional) => {
-                self.compile_if(conditional, unconditional)?
+            AstNode::Number(val) => self.compile_number(val),
+            AstNode::String(val) => self.compile_string(val),
+            AstNode::Ident(ident) => self.compile_load_var(&ident),
+            AstNode::BinaryOp(left, op, right) => self.compile_binary_op(*left, &op, *right),
+            AstNode::UnaryOp(n, op) => self.compile_unary_op(*n, &op),
+            AstNode::Comparison(left, op, right) => self.compile_comparison(*left, &op, *right),
+            AstNode::Let(name, data_type, expr) => self.compile_let(&name, data_type, *expr),
+            AstNode::Assign(name, expr) => self.compile_assign(&name, *expr),
+            AstNode::Call(name, args) => self.compile_function_call(&name, args),
+            AstNode::Return(expr) => self.compile_return(expr),
+            AstNode::FnDef(name, args, return_type, body) => {
+                self.compile_function_def(&name, args, return_type, body)
             }
-            AstNode::While(cond, stmts) => self.compile_while(*cond, stmts)?,
+            AstNode::If(conditional, unconditional) => self.compile_if(conditional, unconditional),
+            AstNode::While(cond, stmts) => self.compile_while(*cond, stmts),
         }
-        Ok(())
     }
 
-    fn compile_number(&mut self, val: i64) -> Result<()> {
+    fn compile_number(&mut self, val: i64) -> Result<Type> {
         let index = self.add_constant(Constant::Int(val));
         self.emit_opcode(Opcode::ConstI64);
         self.emit_u32(index);
         self.push_stack();
-        Ok(())
+        Ok(Type::Int)
     }
 
-    fn compile_string(&mut self, val: String) -> Result<()> {
+    fn compile_string(&mut self, val: String) -> Result<Type> {
         let index = self.add_constant(Constant::String(val));
         self.emit_opcode(Opcode::ConstString);
         self.emit_u32(index);
         self.push_stack();
-        Ok(())
+        Ok(Type::String)
     }
 
-    fn compile_load_var(&mut self, ident: &str) -> Result<()> {
-        let local_idx = *self
+    fn compile_load_var(&mut self, ident: &str) -> Result<Type> {
+        let local_idx = self
             .locals
             .get(ident)
-            .ok_or_else(|| anyhow::anyhow!("Undefined variable: {ident}"))?;
+            .ok_or_else(|| anyhow::anyhow!("Undefined variable: {ident}"))?
+            .clone();
         self.emit_opcode(Opcode::LoadLocal);
-        self.emit_u16(local_idx);
+        self.emit_u16(local_idx.1);
         self.push_stack();
-        Ok(())
+        Ok(local_idx.0)
     }
 
-    fn compile_binary_op(&mut self, left: AstNode, op: &str, right: AstNode) -> Result<()> {
+    fn compile_binary_op(&mut self, left: AstNode, op: &str, right: AstNode) -> Result<Type> {
         self.compile_node(left)?;
         self.compile_node(right)?;
 
@@ -127,10 +128,10 @@ impl Compiler {
         }
 
         self.pop_stack();
-        Ok(())
+        Ok(Type::Int)
     }
 
-    fn compile_unary_op(&mut self, n: AstNode, op: &str) -> Result<()> {
+    fn compile_unary_op(&mut self, n: AstNode, op: &str) -> Result<Type> {
         match op {
             "-" => {
                 self.emit_opcode(Opcode::TinyInt);
@@ -139,18 +140,18 @@ impl Compiler {
                 self.compile_node(n)?;
                 self.emit_opcode(Opcode::Sub);
                 self.pop_stack();
-                Ok(())
+                Ok(Type::Int)
             }
             "!" => {
                 self.compile_node(n)?;
                 self.emit_opcode(Opcode::Not);
-                Ok(())
+                Ok(Type::Int)
             }
             _ => bail!("Unknown unary op: {op}"),
         }
     }
 
-    fn compile_comparison(&mut self, left: AstNode, op: &str, right: AstNode) -> Result<()> {
+    fn compile_comparison(&mut self, left: AstNode, op: &str, right: AstNode) -> Result<Type> {
         self.compile_node(left)?;
         self.compile_node(right)?;
 
@@ -164,53 +165,94 @@ impl Compiler {
             _ => bail!("Unknown comparison: {op}"),
         }
 
-        Ok(())
+        Ok(Type::Bool)
     }
 
-    fn compile_let(&mut self, name: &str, expr: AstNode) -> Result<()> {
-        let local_idx = if let Some(&idx) = self.locals.get(name) {
-            idx
-        } else {
+    fn compile_let(
+        &mut self,
+        name: &str,
+        data_type: Option<String>,
+        expr: AstNode,
+    ) -> Result<Type> {
+        if self.locals.contains_key(name) {
+            bail!("Varaible {name} already defined");
+        }
+
+        let local_idx = {
             let idx = self.next_local;
-            self.locals.insert(name.to_string(), idx);
+            let data_type = if let Some(data_type) = data_type {
+                Type::from_string(data_type)?
+            } else {
+                Type::infer(expr.clone())?
+            };
+            self.locals
+                .insert(name.to_string(), (data_type.clone(), idx));
             self.next_local += 1;
-            idx
+            (data_type, idx)
         };
 
-        self.compile_node(expr)?;
-
-        self.emit_opcode(Opcode::StoreLocal);
-        self.emit_u16(local_idx);
-
-        self.pop_stack();
-        Ok(())
-    }
-
-    fn compile_assign(&mut self, name: &str, expr: AstNode) -> Result<()> {
-        let local_idx = *self.locals.get(name).expect("Variable {name} not defined");
-
-        self.compile_node(expr)?;
-
-        self.emit_opcode(Opcode::StoreLocal);
-        self.emit_u16(local_idx);
-
-        self.pop_stack();
-        Ok(())
-    }
-
-    fn compile_return(&mut self, expr: Option<Box<AstNode>>) -> Result<()> {
-        if let Some(expr) = expr {
-            self.compile_node(*expr)?;
+        let actual_type = self.compile_node(expr)?;
+        if !actual_type.can_convert_to(local_idx.0.clone()) {
+            return Err(anyhow::anyhow!(
+                "Unable to convert from {actual_type:?} to {:?}",
+                local_idx.0
+            ));
         }
+
+        self.emit_opcode(Opcode::StoreLocal);
+        self.emit_u16(local_idx.1);
+
+        self.pop_stack();
+        Ok(Type::Unit)
+    }
+
+    fn compile_assign(&mut self, name: &str, expr: AstNode) -> Result<Type> {
+        let local_idx = self
+            .locals
+            .get(name)
+            .expect("Variable {name} not defined")
+            .clone();
+
+        let actual_type = self.compile_node(expr)?;
+        if !actual_type.can_convert_to(local_idx.0.clone()) {
+            return Err(anyhow::anyhow!(
+                "Unable to convert from {actual_type:?} to {:?}",
+                local_idx.0
+            ));
+        }
+
+        self.emit_opcode(Opcode::StoreLocal);
+        self.emit_u16(local_idx.1);
+
+        self.pop_stack();
+        Ok(Type::Unit)
+    }
+
+    fn compile_return(&mut self, expr: Option<Box<AstNode>>) -> Result<Type> {
+        let ret_type = if let Some(expr) = expr {
+            self.compile_node(*expr)?
+        } else {
+            Type::Unit
+        };
+
+        let cf = self.current_function.as_ref().unwrap();
+        let expected_type = self.symbol_registry.get(&cf.name).unwrap();
+        if !ret_type.can_convert_to(expected_type.return_type.clone()) {
+            bail!(
+                "Expected return type {:?}, found {ret_type:?}",
+                expected_type.return_type
+            );
+        }
+
         self.emit_opcode(Opcode::Ret);
-        Ok(())
+        Ok(Type::Unit)
     }
 
     fn compile_if(
         &mut self,
         conditional: Vec<(Box<AstNode>, Vec<AstNode>)>,
         unconditional: Vec<AstNode>,
-    ) -> Result<()> {
+    ) -> Result<Type> {
         let mut write_start_to = Vec::new();
         for branch in conditional.clone() {
             self.compile_node(*branch.0)?;
@@ -257,10 +299,10 @@ impl Compiler {
                 .copy_from_slice(&addr_to_write[..4]);
         }
 
-        Ok(())
+        Ok(Type::Unit)
     }
 
-    fn compile_while(&mut self, cond: AstNode, body: Vec<AstNode>) -> Result<()> {
+    fn compile_while(&mut self, cond: AstNode, body: Vec<AstNode>) -> Result<Type> {
         let start = self.current_function.as_ref().unwrap().code.len() as u32;
         self.compile_node(cond)?;
 
@@ -281,15 +323,16 @@ impl Compiler {
         self.current_function.as_mut().unwrap().code[write_end..(write_end + 4)]
             .copy_from_slice(&addr_to_write[..4]);
 
-        Ok(())
+        Ok(Type::Unit)
     }
 
     fn compile_function_def(
         &mut self,
         name: &str,
-        args: Vec<String>,
+        args: Vec<(String, String)>,
+        _return_type: Option<String>,
         body: Vec<AstNode>,
-    ) -> Result<()> {
+    ) -> Result<Type> {
         if let Some(cf) = self.current_function.clone()
             && cf.code.last().is_none_or(|&op| op != Opcode::Ret as u8)
         {
@@ -315,7 +358,7 @@ impl Compiler {
 
         for arg in args {
             let idx = self.next_local;
-            self.locals.insert(arg, idx);
+            self.locals.insert(arg.0, (Type::from_string(arg.1)?, idx));
             self.next_local += 1;
         }
 
@@ -323,10 +366,10 @@ impl Compiler {
             self.compile_node(node)?;
         }
 
-        Ok(())
+        Ok(Type::Unit)
     }
 
-    fn compile_function_call(&mut self, name: &str, args: Vec<AstNode>) -> Result<()> {
+    fn compile_function_call(&mut self, name: &str, args: Vec<AstNode>) -> Result<Type> {
         if self.native_registry.has(name) {
             self.compile_native_call(name, args)
         } else {
@@ -344,8 +387,14 @@ impl Compiler {
                 );
             }
 
-            for arg in args.iter() {
-                self.compile_node(arg.clone())?;
+            for (i, arg) in args.iter().enumerate() {
+                let actual_type = self.compile_node(arg.clone())?;
+                if !actual_type.can_convert_to(symbol.arg_types[i].clone()) {
+                    bail!(
+                        "Cannot convert from {actual_type:?} to {:?} calling {name}",
+                        symbol.arg_types[0]
+                    )
+                }
                 self.pop_stack();
             }
 
@@ -357,12 +406,12 @@ impl Compiler {
                 self.push_stack();
             }
 
-            Ok(())
+            Ok(symbol.return_type.clone())
         }
     }
 
-    fn compile_native_call(&mut self, name: &str, args: Vec<AstNode>) -> Result<()> {
-        let (_, arity, vararg, returns) = *self.native_registry.get(name).unwrap();
+    fn compile_native_call(&mut self, name: &str, args: Vec<AstNode>) -> Result<Type> {
+        let (_, arity, vararg, return_type) = self.native_registry.get(name).unwrap().clone();
 
         if vararg {
             if (args.len() as u8) < arity {
@@ -386,11 +435,11 @@ impl Compiler {
         self.emit_u32(name_idx);
         self.emit_byte(args.len() as u8);
 
-        if returns {
+        if !matches!(return_type, Type::Unit) {
             self.push_stack();
         }
 
-        Ok(())
+        Ok(return_type)
     }
 
     fn add_constant(&mut self, constant: Constant) -> u32 {

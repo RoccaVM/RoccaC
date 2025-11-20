@@ -5,12 +5,12 @@ use std::{
 
 use anyhow::Result;
 
-use crate::vm::Value;
+use crate::{types::Type, vm::Value};
 
 pub type NativeFunction = fn(&[Value]) -> Result<Value>;
 
-// (fn, artiy, vararg, returns value)
-pub type NativeFnDesc = (NativeFunction, u8, bool, bool);
+// (fn, artiy, vararg, return_type)
+pub type NativeFnDesc = (NativeFunction, u8, bool, Type);
 
 #[derive(Debug)]
 pub struct NativeRegistry {
@@ -43,7 +43,7 @@ impl NativeRegistry {
     }
 
     fn register_io_functions(&mut self) {
-        self.register("print", (native_print, 1, true, false));
+        self.register("print", (native_print, 1, true, Type::Unit));
     }
 
     pub fn has(&self, name: &str) -> bool {

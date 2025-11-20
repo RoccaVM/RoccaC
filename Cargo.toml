@@ -13,3 +13,6 @@ pest = "2.8.3"
 pest_derive = "2.8.3"
 ratatui = "0.29.0"
 thiserror = "2.0.17"
+
+[profile.dev]
+debug = "line-tables-only"
