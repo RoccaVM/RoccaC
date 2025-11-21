@@ -60,7 +60,7 @@ fn main() -> Result<()> {
 
     let contents = fs::read_to_string(cli.file.clone())?;
 
-    let tree = parser::parse(contents.as_str())?;
+    let tree = parser::parse(contents.as_str(), cli.file.to_str().unwrap())?;
 
     //println!("{tree:#?}");
 

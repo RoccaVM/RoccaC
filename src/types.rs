@@ -44,8 +44,8 @@ impl Type {
 
     pub fn infer(ast: AstNode) -> Result<Self> {
         match ast {
-            AstNode::Number(_) => Ok(Self::Int),
-            AstNode::String(_) => Ok(Self::String),
+            AstNode::Number(_, _) => Ok(Self::Int),
+            AstNode::String(_, _) => Ok(Self::String),
             _ => Err(anyhow::anyhow!("Unable to infer type: {ast:?}")),
         }
     }

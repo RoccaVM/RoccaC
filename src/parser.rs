@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use anyhow::{Result, bail};
 use pest::{Parser, iterators::Pair};
 use pest_derive::Parser;
@@ -13,68 +15,112 @@ pub enum ParserError {
     WrongPairCount(usize, usize),
 }
 
-#[derive(Clone, Debug)]
-pub enum AstNode {
-    Number(i64),
-    String(String),
-    Ident(String),
-    BinaryOp(Box<AstNode>, String, Box<AstNode>),
-    UnaryOp(Box<AstNode>, String),
-    Comparison(Box<AstNode>, String, Box<AstNode>),
-    // Name, Optional data type, Assignment
-    Let(String, Option<String>, Box<AstNode>),
-    Assign(String, Box<AstNode>),
-    Return(Option<Box<AstNode>>),
-    Call(String, Vec<AstNode>),
-    // Name, Argument[(Name, Data type)], Optional return type, Body
-    FnDef(String, Vec<(String, String)>, Option<String>, Vec<AstNode>),
-    If(Vec<(Box<AstNode>, Vec<AstNode>)>, Vec<AstNode>),
-    While(Box<AstNode>, Vec<AstNode>),
+pub type Loc = (String, Range<usize>);
+
+fn to_loc(file: &str, pair: Pair<Rule>) -> Loc {
+    (
+        file.to_string(),
+        (pair.as_span().start())..(pair.as_span().end()),
+    )
 }
 
-pub fn parse(source: &str) -> Result<Vec<AstNode>> {
+#[derive(Clone, Debug)]
+pub enum AstNode {
+    Number(i64, Loc),
+    String(String, Loc),
+    Ident(String, Loc),
+    BinaryOp(Box<AstNode>, String, Box<AstNode>, Loc),
+    UnaryOp(Box<AstNode>, String, Loc),
+    Comparison(Box<AstNode>, String, Box<AstNode>, Loc),
+    // Name, Mutable?, Optional data type and location, Assignment
+    Let(String, bool, Option<(String, Loc)>, Box<AstNode>, Loc),
+    Assign(String, Box<AstNode>, Loc),
+    Return(Option<Box<AstNode>>, Loc),
+    Call(String, Vec<AstNode>, Loc),
+    // Name, Argument[(Name, Data type)], Optional return type, Body
+    FnDef(
+        String,
+        Vec<(String, String, Loc)>,
+        Option<String>,
+        Vec<AstNode>,
+        Loc,
+    ),
+    If(Vec<(Box<AstNode>, Vec<AstNode>)>, Vec<AstNode>, Loc),
+    While(Box<AstNode>, Vec<AstNode>, Loc),
+}
+
+impl AstNode {
+    pub fn loc(&self) -> Loc {
+        match self {
+            AstNode::Number(_, loc) => loc.clone(),
+            AstNode::String(_, loc) => loc.clone(),
+            AstNode::Ident(_, loc) => loc.clone(),
+            AstNode::BinaryOp(_, _, _, loc) => loc.clone(),
+            AstNode::UnaryOp(_, _, loc) => loc.clone(),
+            AstNode::Comparison(_, _, _, loc) => loc.clone(),
+            AstNode::Let(_, _, _, _, loc) => loc.clone(),
+            AstNode::Assign(_, _, loc) => loc.clone(),
+            AstNode::Return(_, loc) => loc.clone(),
+            AstNode::Call(_, _, loc) => loc.clone(),
+            AstNode::FnDef(_, _, _, _, loc) => loc.clone(),
+            AstNode::If(_, _, loc) => loc.clone(),
+            AstNode::While(_, _, loc) => loc.clone(),
+        }
+    }
+}
+
+pub fn parse(source: &str, file: &str) -> Result<Vec<AstNode>> {
     let pairs = SyntaxParser::parse(Rule::prog, source)?;
     let mut ast = Vec::new();
 
     for pair in pairs {
         //pair_tree(pair, 0);
-        ast.push(build_ast(pair)?);
+        ast.push(build_ast(pair, file)?);
     }
 
     Ok(ast)
 }
 
-fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
+fn build_ast(pair: Pair<Rule>, file: &str) -> Result<AstNode> {
     match pair.as_rule() {
-        Rule::number => Ok(AstNode::Number(pair.as_str().parse()?)),
-        Rule::ident => Ok(AstNode::Ident(pair.as_str().trim().to_string())),
-        Rule::string => Ok(AstNode::String(unescape_string(
-            pair.as_str().trim_matches('"'),
-        )?)),
+        Rule::number => Ok(AstNode::Number(pair.as_str().parse()?, to_loc(file, pair))),
+        Rule::ident => Ok(AstNode::Ident(
+            pair.as_str().trim().to_string(),
+            to_loc(file, pair),
+        )),
+        Rule::string => Ok(AstNode::String(
+            unescape_string(pair.as_str().trim_matches('"'))?,
+            to_loc(file, pair),
+        )),
         Rule::logic => {
-            let mut pairs = pair.into_inner();
+            let mut pairs = pair.clone().into_inner();
             if !(pairs.len() - 1).is_multiple_of(2) {
                 return Err(ParserError::WrongPairCount(3, pairs.len()).into());
             }
 
-            let mut left = build_ast(pairs.next().unwrap())?;
+            let mut left = build_ast(pairs.next().unwrap(), file)?;
 
             while let Some(op) = pairs.next() {
                 let op = op.as_str().trim().to_string();
-                let right = build_ast(pairs.next().unwrap())?;
+                let right = build_ast(pairs.next().unwrap(), file)?;
 
-                left = AstNode::BinaryOp(Box::new(left), op, Box::new(right))
+                left = AstNode::BinaryOp(
+                    Box::new(left),
+                    op,
+                    Box::new(right),
+                    to_loc(file, pair.clone()),
+                )
             }
 
             Ok(left)
         }
         Rule::comparison => {
-            let mut pairs = pair.into_inner();
+            let mut pairs = pair.clone().into_inner();
             if !(pairs.len() - 1).is_multiple_of(2) {
                 return Err(ParserError::WrongPairCount(3, pairs.len()).into());
             }
 
-            let left = build_ast(pairs.next().unwrap())?;
+            let left = build_ast(pairs.next().unwrap(), file)?;
 
             let first_pair = match pairs.next() {
                 Some(p) => p,
@@ -82,24 +128,33 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
             };
 
             let current_op = first_pair.as_str().trim().to_string();
-            let mut current_right = build_ast(pairs.next().unwrap())?;
+            let mut current_right = build_ast(pairs.next().unwrap(), file)?;
 
             let mut final_cmp = AstNode::Comparison(
                 Box::new(left.clone()),
                 current_op,
                 Box::new(current_right.clone()),
+                to_loc(file, pair.clone()),
             );
 
             while let Some(op) = pairs.next() {
                 let next_left = current_right;
                 let next_op = op.as_str().trim().to_string();
-                let next_right = build_ast(pairs.next().unwrap())?;
+                let next_right = build_ast(pairs.next().unwrap(), file)?;
 
-                let next_cmp =
-                    AstNode::Comparison(Box::new(next_left), next_op, Box::new(next_right.clone()));
+                let next_cmp = AstNode::Comparison(
+                    Box::new(next_left),
+                    next_op,
+                    Box::new(next_right.clone()),
+                    to_loc(file, pair.clone()),
+                );
 
-                final_cmp =
-                    AstNode::BinaryOp(Box::new(final_cmp), "&&".to_string(), Box::new(next_cmp));
+                final_cmp = AstNode::BinaryOp(
+                    Box::new(final_cmp),
+                    "&&".to_string(),
+                    Box::new(next_cmp),
+                    to_loc(file, pair.clone()),
+                );
 
                 current_right = next_right;
             }
@@ -107,12 +162,12 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
             Ok(final_cmp)
         }
         Rule::expr => {
-            let mut pairs = pair.into_inner();
+            let mut pairs = pair.clone().into_inner();
             if !(pairs.len() - 1).is_multiple_of(2) {
                 return Err(ParserError::WrongPairCount(3, pairs.len()).into());
             }
 
-            let mut left = build_ast(pairs.next().unwrap())?;
+            let mut left = build_ast(pairs.next().unwrap(), file)?;
 
             while let Some(op) = pairs.next() {
                 let op = match op.as_rule() {
@@ -120,20 +175,25 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
                     Rule::MINUS => "-",
                     _ => bail!("Unexpected operator: {op:?}"),
                 };
-                let right = build_ast(pairs.next().unwrap())?;
+                let right = build_ast(pairs.next().unwrap(), file)?;
 
-                left = AstNode::BinaryOp(Box::new(left), op.to_string(), Box::new(right));
+                left = AstNode::BinaryOp(
+                    Box::new(left),
+                    op.to_string(),
+                    Box::new(right),
+                    to_loc(file, pair.clone()),
+                );
             }
 
             Ok(left)
         }
         Rule::term => {
-            let mut pairs = pair.into_inner();
+            let mut pairs = pair.clone().into_inner();
             if !(pairs.len() - 1).is_multiple_of(2) {
                 return Err(ParserError::WrongPairCount(3, pairs.len()).into());
             }
 
-            let mut left = build_ast(pairs.next().unwrap())?;
+            let mut left = build_ast(pairs.next().unwrap(), file)?;
 
             while let Some(op) = pairs.next() {
                 let op = match op.as_rule() {
@@ -142,72 +202,103 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
                     Rule::PERCENT => "%",
                     _ => bail!("Unexpected operator: {op:?}"),
                 };
-                let right = build_ast(pairs.next().unwrap())?;
+                let right = build_ast(pairs.next().unwrap(), file)?;
 
-                left = AstNode::BinaryOp(Box::new(left), op.to_string(), Box::new(right));
+                left = AstNode::BinaryOp(
+                    Box::new(left),
+                    op.to_string(),
+                    Box::new(right),
+                    to_loc(file, pair.clone()),
+                );
             }
 
             Ok(left)
         }
         Rule::factor => {
-            let mut pairs = pair.into_inner();
+            let mut pairs = pair.clone().into_inner();
             let first = pairs.next().expect("Need at least one pair");
 
             match first.as_rule() {
                 Rule::MINUS | Rule::BANG => Ok(AstNode::UnaryOp(
                     Box::new(build_ast(
                         pairs.next().expect("Expected primary after factor"),
+                        file,
                     )?),
                     first.as_str().trim().to_string(),
+                    to_loc(file, pair),
                 )),
-                Rule::primary => build_ast(first),
+                Rule::primary => build_ast(first, file),
                 _ => Err(anyhow::anyhow!("Unexpected rule: {:?}", first.as_rule())),
             }
         }
-        Rule::primary => build_ast(pair.into_inner().next().unwrap()),
+        Rule::primary => build_ast(pair.into_inner().next().unwrap(), file),
         Rule::let_stmt => {
-            let mut pairs = pair.into_inner();
-            if pairs.len() != 2 && pairs.len() != 3 {
+            let mut pairs = pair.clone().into_inner();
+            if pairs.len() < 2 && pairs.len() > 4 {
                 return Err(ParserError::WrongPairCount(2, pairs.len()).into());
             }
 
-            let name = pairs.next().unwrap().as_str().trim().to_string();
+            let next_pair = pairs.next().unwrap();
+            let (name, mutability) = if matches!(next_pair.as_rule(), Rule::mut_specifier) {
+                (pairs.next().unwrap().as_str().trim().to_string(), true)
+            } else {
+                (next_pair.as_str().trim().to_string(), false)
+            };
+
             let next_pair = pairs.next().unwrap();
             if matches!(next_pair.as_rule(), Rule::data_type) {
-                let dtype = next_pair.as_str().trim().to_string();
-                let expr = build_ast(pairs.next().unwrap())?;
-                Ok(AstNode::Let(name, Some(dtype), Box::new(expr)))
+                let type_pair = next_pair.clone();
+                let expr = build_ast(pairs.next().unwrap(), file)?;
+                Ok(AstNode::Let(
+                    name,
+                    mutability,
+                    Some((
+                        type_pair.as_str().trim().to_string(),
+                        to_loc(file, type_pair),
+                    )),
+                    Box::new(expr),
+                    to_loc(file, pair),
+                ))
             } else {
-                let expr = build_ast(next_pair)?;
-                Ok(AstNode::Let(name, None, Box::new(expr)))
+                let expr = build_ast(next_pair, file)?;
+                Ok(AstNode::Let(
+                    name,
+                    mutability,
+                    None,
+                    Box::new(expr),
+                    to_loc(file, pair),
+                ))
             }
         }
         Rule::assign_stmt => {
-            let mut pairs = pair.into_inner();
+            let mut pairs = pair.clone().into_inner();
             if pairs.len() != 2 {
                 return Err(ParserError::WrongPairCount(2, pairs.len()).into());
             }
 
             let name = pairs.next().unwrap().as_str().trim().to_string();
-            let expr = build_ast(pairs.next().unwrap())?;
-            Ok(AstNode::Assign(name, Box::new(expr)))
+            let expr = build_ast(pairs.next().unwrap(), file)?;
+            Ok(AstNode::Assign(name, Box::new(expr), to_loc(file, pair)))
         }
         Rule::return_stmt => {
-            let mut pairs = pair.into_inner();
+            let mut pairs = pair.clone().into_inner();
             if pairs.len() > 1 {
                 return Err(ParserError::WrongPairCount(1, pairs.len()).into());
             }
 
             if pairs.len() == 0 {
-                Ok(AstNode::Return(None))
+                Ok(AstNode::Return(None, to_loc(file, pair)))
             } else {
-                let expr = build_ast(pairs.next().unwrap())?;
-                Ok(AstNode::Return(Some(Box::new(expr))))
+                let expr = build_ast(pairs.next().unwrap(), file)?;
+                Ok(AstNode::Return(Some(Box::new(expr)), to_loc(file, pair)))
             }
         }
         Rule::if_stmt => {
-            let mut pairs = pair.into_inner();
-            let condition = build_ast(pairs.next().expect("If statement must have condition"))?;
+            let mut pairs = pair.clone().into_inner();
+            let condition = build_ast(
+                pairs.next().expect("If statement must have condition"),
+                file,
+            )?;
 
             let mut cond_pairs = Vec::new();
             cond_pairs.push((Box::new(condition), Vec::new()));
@@ -218,35 +309,37 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
                         let mut pairs = p.into_inner();
                         let condition = build_ast(
                             pairs.next().expect("If-Else statement must have condition"),
+                            file,
                         )?;
                         cond_pairs.push((Box::new(condition), Vec::new()));
 
                         for p in pairs {
-                            cond_pairs.last_mut().unwrap().1.push(build_ast(p)?);
+                            cond_pairs.last_mut().unwrap().1.push(build_ast(p, file)?);
                         }
                     }
                     Rule::else_stmt => {
                         for s in p.into_inner() {
-                            uncond_stmts.push(build_ast(s)?);
+                            uncond_stmts.push(build_ast(s, file)?);
                         }
                     }
-                    _ => cond_pairs.last_mut().unwrap().1.push(build_ast(p)?),
+                    _ => cond_pairs.last_mut().unwrap().1.push(build_ast(p, file)?),
                 }
             }
 
-            Ok(AstNode::If(cond_pairs, uncond_stmts))
+            Ok(AstNode::If(cond_pairs, uncond_stmts, to_loc(file, pair)))
         }
         Rule::while_loop => {
-            let mut pairs = pair.into_inner();
-            let condition = build_ast(pairs.next().expect("While loop must have condition"))?;
+            let mut pairs = pair.clone().into_inner();
+            let condition = build_ast(pairs.next().expect("While loop must have condition"), file)?;
 
             Ok(AstNode::While(
                 Box::new(condition),
-                pairs.map(|p| build_ast(p).unwrap()).collect(),
+                pairs.map(|p| build_ast(p, file).unwrap()).collect(),
+                to_loc(file, pair),
             ))
         }
         Rule::call => {
-            let mut pairs = pair.into_inner();
+            let mut pairs = pair.clone().into_inner();
 
             let name = pairs
                 .next()
@@ -258,13 +351,13 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
             let mut args = Vec::with_capacity(pairs.len());
 
             for p in pairs {
-                args.push(build_ast(p)?);
+                args.push(build_ast(p, file)?);
             }
 
-            Ok(AstNode::Call(name, args))
+            Ok(AstNode::Call(name, args, to_loc(file, pair)))
         }
         Rule::fn_def => {
-            let mut pairs = pair.into_inner();
+            let mut pairs = pair.clone().into_inner();
 
             let name = pairs
                 .next()
@@ -278,14 +371,19 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
             let mut return_type = None;
             while let Some(p) = pairs.next() {
                 if matches!(p.as_rule(), Rule::ident) {
+                    let start = p.as_span().start();
+                    let name = p.as_str().trim().to_string();
+                    let p = pairs.next().unwrap();
+                    let end = p.as_span().end();
                     args.push((
+                        name,
                         p.as_str().trim().to_string(),
-                        pairs.next().unwrap().as_str().trim().to_string(),
+                        (file.to_string(), start..end),
                     ));
                 } else if matches!(p.as_rule(), Rule::data_type) {
                     return_type = Some(p.as_str().trim().to_string())
                 } else if matches!(p.as_rule(), Rule::stmt) {
-                    body.push(build_ast(p)?);
+                    body.push(build_ast(p, file)?);
                 } else {
                     bail!(
                         "Unexpected node, expected either ident or stmt, found: {:?}",
@@ -294,9 +392,15 @@ fn build_ast(pair: Pair<Rule>) -> Result<AstNode> {
                 }
             }
 
-            Ok(AstNode::FnDef(name, args, return_type, body))
+            Ok(AstNode::FnDef(
+                name,
+                args,
+                return_type,
+                body,
+                to_loc(file, pair),
+            ))
         }
-        Rule::stmt => Ok(build_ast(pair.into_inner().next().unwrap())?),
+        Rule::stmt => Ok(build_ast(pair.into_inner().next().unwrap(), file)?),
         _ => Err(anyhow::anyhow!("Unexpected rule: {:?}", pair.as_rule())),
     }
 }

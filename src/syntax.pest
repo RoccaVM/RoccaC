@@ -38,9 +38,12 @@ OR = @{ "||" }
 logical_op = { AND | OR }
 logic = { comparison ~ (logical_op ~ comparison)* }
 
+mut_specifier = { "mut" }
+ref_specifier = { "ref" | "&" }
+
 data_type = { ident ~ ("<" ~ data_type ~ ">")? }
 
-let_stmt = { "let" ~ ident ~ (":" ~ data_type)? ~ "=" ~ logic }
+let_stmt = { "let" ~ mut_specifier? ~ ident ~ (":" ~ data_type)? ~ "=" ~ logic }
 assign_stmt = { ident ~ "=" ~ logic }
 return_stmt = { "return" ~ logic? }
 

@@ -1,11 +1,12 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fs};
 
 use anyhow::{Result, bail};
+use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
 
 use crate::{
     bytecode::{BytecodeFile, Constant, Function, Opcode},
     native::NativeRegistry,
-    parser::AstNode,
+    parser::{AstNode, Loc},
     registry::SymbolRegistry,
     types::Type,
 };
@@ -13,7 +14,8 @@ use crate::{
 pub struct Compiler {
     bytecode: BytecodeFile,
     current_function: Option<Function>,
-    locals: HashMap<String, (Type, u16)>,
+    // Name, (Type, ID, mutability, definition location)
+    locals: HashMap<String, (Type, u16, bool, Loc)>,
     next_local: u16,
     max_stack: u16,
     current_stack_depth: u16,
@@ -67,25 +69,33 @@ impl Compiler {
 
     fn compile_node(&mut self, node: AstNode) -> Result<Type> {
         match node {
-            AstNode::Number(val) => self.compile_number(val),
-            AstNode::String(val) => self.compile_string(val),
-            AstNode::Ident(ident) => self.compile_load_var(&ident),
-            AstNode::BinaryOp(left, op, right) => self.compile_binary_op(*left, &op, *right),
-            AstNode::UnaryOp(n, op) => self.compile_unary_op(*n, &op),
-            AstNode::Comparison(left, op, right) => self.compile_comparison(*left, &op, *right),
-            AstNode::Let(name, data_type, expr) => self.compile_let(&name, data_type, *expr),
-            AstNode::Assign(name, expr) => self.compile_assign(&name, *expr),
-            AstNode::Call(name, args) => self.compile_function_call(&name, args),
-            AstNode::Return(expr) => self.compile_return(expr),
-            AstNode::FnDef(name, args, return_type, body) => {
-                self.compile_function_def(&name, args, return_type, body)
+            AstNode::Number(val, loc) => self.compile_number(val, loc),
+            AstNode::String(val, loc) => self.compile_string(val, loc),
+            AstNode::Ident(ident, loc) => self.compile_load_var(&ident, loc),
+            AstNode::BinaryOp(left, op, right, loc) => {
+                self.compile_binary_op(*left, &op, *right, loc)
             }
-            AstNode::If(conditional, unconditional) => self.compile_if(conditional, unconditional),
-            AstNode::While(cond, stmts) => self.compile_while(*cond, stmts),
+            AstNode::UnaryOp(n, op, loc) => self.compile_unary_op(*n, &op, loc),
+            AstNode::Comparison(left, op, right, loc) => {
+                self.compile_comparison(*left, &op, *right, loc)
+            }
+            AstNode::Let(name, mutability, data_type, expr, loc) => {
+                self.compile_let(&name, mutability, data_type, *expr, loc)
+            }
+            AstNode::Assign(name, expr, loc) => self.compile_assign(&name, *expr, loc),
+            AstNode::Call(name, args, loc) => self.compile_function_call(&name, args, loc),
+            AstNode::Return(expr, loc) => self.compile_return(expr, loc),
+            AstNode::FnDef(name, args, return_type, body, loc) => {
+                self.compile_function_def(&name, args, return_type, body, loc)
+            }
+            AstNode::If(conditional, unconditional, loc) => {
+                self.compile_if(conditional, unconditional, loc)
+            }
+            AstNode::While(cond, stmts, loc) => self.compile_while(*cond, stmts, loc),
         }
     }
 
-    fn compile_number(&mut self, val: i64) -> Result<Type> {
+    fn compile_number(&mut self, val: i64, _loc: Loc) -> Result<Type> {
         let index = self.add_constant(Constant::Int(val));
         self.emit_opcode(Opcode::ConstI64);
         self.emit_u32(index);
@@ -93,7 +103,7 @@ impl Compiler {
         Ok(Type::Int)
     }
 
-    fn compile_string(&mut self, val: String) -> Result<Type> {
+    fn compile_string(&mut self, val: String, _loc: Loc) -> Result<Type> {
         let index = self.add_constant(Constant::String(val));
         self.emit_opcode(Opcode::ConstString);
         self.emit_u32(index);
@@ -101,11 +111,28 @@ impl Compiler {
         Ok(Type::String)
     }
 
-    fn compile_load_var(&mut self, ident: &str) -> Result<Type> {
+    fn compile_load_var(&mut self, ident: &str, loc: Loc) -> Result<Type> {
         let local_idx = self
             .locals
             .get(ident)
-            .ok_or_else(|| anyhow::anyhow!("Undefined variable: {ident}"))?
+            .ok_or_else(|| {
+                let mut colors = ColorGenerator::new();
+                let a = colors.next();
+                Report::build(ReportKind::Error, loc.clone())
+                    .with_message(format!("Variable {ident:?} not found"))
+                    .with_label(
+                        Label::new(loc.clone())
+                            .with_message(format!("Could not find a variable named {ident:?}"))
+                            .with_color(a),
+                    )
+                    .finish()
+                    .print((
+                        loc.0.clone(),
+                        Source::from(fs::read_to_string(loc.0).unwrap()),
+                    ))
+                    .unwrap();
+                anyhow::anyhow!("Varaible {ident:?} not found")
+            })?
             .clone();
         self.emit_opcode(Opcode::LoadLocal);
         self.emit_u16(local_idx.1);
@@ -113,7 +140,13 @@ impl Compiler {
         Ok(local_idx.0)
     }
 
-    fn compile_binary_op(&mut self, left: AstNode, op: &str, right: AstNode) -> Result<Type> {
+    fn compile_binary_op(
+        &mut self,
+        left: AstNode,
+        op: &str,
+        right: AstNode,
+        loc: Loc,
+    ) -> Result<Type> {
         self.compile_node(left)?;
         self.compile_node(right)?;
 
@@ -124,14 +157,31 @@ impl Compiler {
             "/" => self.emit_opcode(Opcode::Div),
             "&&" => self.emit_opcode(Opcode::And),
             "||" => self.emit_opcode(Opcode::Or),
-            _ => anyhow::bail!("Unknown operator: {op}"),
+            _ => {
+                let mut colors = ColorGenerator::new();
+                let a = colors.next();
+                Report::build(ReportKind::Error, loc.clone())
+                    .with_message(format!("Unknown operator '{op}'"))
+                    .with_label(
+                        Label::new(loc.clone())
+                            .with_message("Unknown operator used here")
+                            .with_color(a),
+                    )
+                    .finish()
+                    .print((
+                        loc.0.clone(),
+                        Source::from(fs::read_to_string(loc.0).unwrap()),
+                    ))
+                    .unwrap();
+                bail!("Unknown operator '{op}'");
+            }
         }
 
         self.pop_stack();
         Ok(Type::Int)
     }
 
-    fn compile_unary_op(&mut self, n: AstNode, op: &str) -> Result<Type> {
+    fn compile_unary_op(&mut self, n: AstNode, op: &str, loc: Loc) -> Result<Type> {
         match op {
             "-" => {
                 self.emit_opcode(Opcode::TinyInt);
@@ -147,11 +197,34 @@ impl Compiler {
                 self.emit_opcode(Opcode::Not);
                 Ok(Type::Int)
             }
-            _ => bail!("Unknown unary op: {op}"),
+            _ => {
+                let mut colors = ColorGenerator::new();
+                let a = colors.next();
+                Report::build(ReportKind::Error, loc.clone())
+                    .with_message(format!("Unknown operator '{op}'"))
+                    .with_label(
+                        Label::new(loc.clone())
+                            .with_message("Unknown operator used here")
+                            .with_color(a),
+                    )
+                    .finish()
+                    .print((
+                        loc.0.clone(),
+                        Source::from(fs::read_to_string(loc.0).unwrap()),
+                    ))
+                    .unwrap();
+                bail!("Unknown operator '{op}'");
+            }
         }
     }
 
-    fn compile_comparison(&mut self, left: AstNode, op: &str, right: AstNode) -> Result<Type> {
+    fn compile_comparison(
+        &mut self,
+        left: AstNode,
+        op: &str,
+        right: AstNode,
+        loc: Loc,
+    ) -> Result<Type> {
         self.compile_node(left)?;
         self.compile_node(right)?;
 
@@ -162,7 +235,24 @@ impl Compiler {
             "!=" => self.emit_opcode(Opcode::Ne),
             ">=" => self.emit_opcode(Opcode::Gte),
             "<=" => self.emit_opcode(Opcode::Lte),
-            _ => bail!("Unknown comparison: {op}"),
+            _ => {
+                let mut colors = ColorGenerator::new();
+                let a = colors.next();
+                Report::build(ReportKind::Error, loc.clone())
+                    .with_message(format!("Unknown comparator '{op}'"))
+                    .with_label(
+                        Label::new(loc.clone())
+                            .with_message("Unknown comparator used here")
+                            .with_color(a),
+                    )
+                    .finish()
+                    .print((
+                        loc.0.clone(),
+                        Source::from(fs::read_to_string(loc.0).unwrap()),
+                    ))
+                    .unwrap();
+                bail!("Unknown comparator '{op}'");
+            }
         }
 
         Ok(Type::Bool)
@@ -171,32 +261,95 @@ impl Compiler {
     fn compile_let(
         &mut self,
         name: &str,
-        data_type: Option<String>,
+        mutability: bool,
+        data_type: Option<(String, Loc)>,
         expr: AstNode,
+        loc: Loc,
     ) -> Result<Type> {
-        if self.locals.contains_key(name) {
-            bail!("Varaible {name} already defined");
+        if let Some(local_idx) = self.locals.get(name) {
+            let mut colors = ColorGenerator::new();
+            let a = colors.next();
+            let b = colors.next();
+            Report::build(ReportKind::Error, loc.clone())
+                .with_message(format!("Variable {name} already defined"))
+                .with_label(
+                    Label::new(local_idx.3.clone())
+                        .with_message("Varaible already defined here")
+                        .with_color(b),
+                )
+                .with_label(
+                    Label::new(loc.clone())
+                        .with_message("Variable redefined here")
+                        .with_color(a),
+                )
+                .with_help("Either mutate the first definition or rename the second one.")
+                .finish()
+                .print((
+                    loc.0.clone(),
+                    Source::from(fs::read_to_string(loc.0).unwrap()),
+                ))
+                .unwrap();
+            bail!("Variable {name} already defined");
         }
 
         let local_idx = {
             let idx = self.next_local;
-            let data_type = if let Some(data_type) = data_type {
-                Type::from_string(data_type)?
+            let data_type = if let Some(data_type) = data_type.clone() {
+                Type::from_string(data_type.0)?
             } else {
                 Type::infer(expr.clone())?
             };
-            self.locals
-                .insert(name.to_string(), (data_type.clone(), idx));
+            self.locals.insert(
+                name.to_string(),
+                (data_type.clone(), idx, mutability, loc.clone()),
+            );
             self.next_local += 1;
             (data_type, idx)
         };
 
-        let actual_type = self.compile_node(expr)?;
+        let actual_type = self.compile_node(expr.clone())?;
         if !actual_type.can_convert_to(local_idx.0.clone()) {
-            return Err(anyhow::anyhow!(
+            let mut colors = ColorGenerator::new();
+            let a = colors.next();
+            let mut builder = Report::build(ReportKind::Error, loc.clone())
+                .with_message(format!(
+                    "Unable to convert from {actual_type:?} to {:?}",
+                    local_idx.0
+                ))
+                .with_label(
+                    Label::new(expr.loc())
+                        .with_message(format!("Expression has type {actual_type:?}"))
+                        .with_color(a),
+                );
+
+            if let Some(data_type) = data_type {
+                let b = colors.next();
+                builder = builder
+                    .with_label(
+                        Label::new(data_type.1)
+                            .with_message(format!(
+                                "Expected type {:?}",
+                                Type::from_string(data_type.0.clone())?
+                            ))
+                            .with_color(b),
+                    )
+                    .with_help(format!(
+                        "Remove the type specifier or replace it with '{:?}'",
+                        Type::from_string(data_type.0)?
+                    ));
+            }
+
+            builder
+                .finish()
+                .print((
+                    loc.0.clone(),
+                    Source::from(fs::read_to_string(loc.0).unwrap()),
+                ))
+                .unwrap();
+            bail!(
                 "Unable to convert from {actual_type:?} to {:?}",
                 local_idx.0
-            ));
+            );
         }
 
         self.emit_opcode(Opcode::StoreLocal);
@@ -206,19 +359,85 @@ impl Compiler {
         Ok(Type::Unit)
     }
 
-    fn compile_assign(&mut self, name: &str, expr: AstNode) -> Result<Type> {
+    fn compile_assign(&mut self, name: &str, expr: AstNode, loc: Loc) -> Result<Type> {
         let local_idx = self
             .locals
             .get(name)
-            .expect("Variable {name} not defined")
+            .ok_or_else(|| {
+                let mut colors = ColorGenerator::new();
+                let a = colors.next();
+                Report::build(ReportKind::Error, loc.clone())
+                    .with_message(format!("Variable {name:?} not found"))
+                    .with_label(
+                        Label::new(loc.clone())
+                            .with_message(format!("Could not find a variable named {name:?}"))
+                            .with_color(a),
+                    )
+                    .finish()
+                    .print((
+                        loc.0.clone(),
+                        Source::from(fs::read_to_string(loc.0.clone()).unwrap()),
+                    ))
+                    .unwrap();
+                anyhow::anyhow!("Varaible {name:?} not found")
+            })?
             .clone();
 
-        let actual_type = self.compile_node(expr)?;
+        let actual_type = self.compile_node(expr.clone())?;
         if !actual_type.can_convert_to(local_idx.0.clone()) {
-            return Err(anyhow::anyhow!(
+            let mut colors = ColorGenerator::new();
+            let a = colors.next();
+            let b = colors.next();
+            Report::build(ReportKind::Error, loc.clone())
+                .with_message(format!(
+                    "Unable to convert from {actual_type:?} to {:?}",
+                    local_idx.0
+                ))
+                .with_label(
+                    Label::new(local_idx.3.clone())
+                        .with_message(format!("Expected type {:?}", local_idx.0))
+                        .with_color(b),
+                )
+                .with_label(
+                    Label::new(expr.loc())
+                        .with_message(format!("Expression has type {actual_type:?}"))
+                        .with_color(a),
+                )
+                .finish()
+                .print((
+                    loc.0.clone(),
+                    Source::from(fs::read_to_string(loc.0).unwrap()),
+                ))
+                .unwrap();
+            bail!(
                 "Unable to convert from {actual_type:?} to {:?}",
                 local_idx.0
-            ));
+            );
+        }
+
+        if !local_idx.2 {
+            let mut colors = ColorGenerator::new();
+            let a = colors.next();
+            let b = colors.next();
+            Report::build(ReportKind::Error, loc.clone())
+                .with_message(format!("Variable {name} is immutable"))
+                .with_label(
+                    Label::new(local_idx.3)
+                        .with_message("Variable was not defined as mutable")
+                        .with_color(b),
+                )
+                .with_label(
+                    Label::new(loc.clone())
+                        .with_message("Variable must be mutable to allow assignment")
+                        .with_color(a),
+                )
+                .finish()
+                .print((
+                    loc.0.clone(),
+                    Source::from(fs::read_to_string(loc.0).unwrap()),
+                ))
+                .unwrap();
+            bail!("Variable {name} is immutable");
         }
 
         self.emit_opcode(Opcode::StoreLocal);
@@ -228,7 +447,7 @@ impl Compiler {
         Ok(Type::Unit)
     }
 
-    fn compile_return(&mut self, expr: Option<Box<AstNode>>) -> Result<Type> {
+    fn compile_return(&mut self, expr: Option<Box<AstNode>>, loc: Loc) -> Result<Type> {
         let ret_type = if let Some(expr) = expr {
             self.compile_node(*expr)?
         } else {
@@ -238,8 +457,32 @@ impl Compiler {
         let cf = self.current_function.as_ref().unwrap();
         let expected_type = self.symbol_registry.get(&cf.name).unwrap();
         if !ret_type.can_convert_to(expected_type.return_type.clone()) {
+            let mut colors = ColorGenerator::new();
+            let a = colors.next();
+            let b = colors.next();
+            Report::build(ReportKind::Error, loc.clone())
+                .with_message(format!(
+                    "Unable to convert from {ret_type:?} to {:?}",
+                    expected_type.return_type
+                ))
+                .with_label(
+                    Label::new(expected_type.loc.clone())
+                        .with_message(format!("Expected type {:?}", expected_type.return_type))
+                        .with_color(b),
+                )
+                .with_label(
+                    Label::new(loc.clone())
+                        .with_message(format!("Expression has type {ret_type:?}"))
+                        .with_color(a),
+                )
+                .finish()
+                .print((
+                    loc.0.clone(),
+                    Source::from(fs::read_to_string(loc.0).unwrap()),
+                ))
+                .unwrap();
             bail!(
-                "Expected return type {:?}, found {ret_type:?}",
+                "Unable to convert from {ret_type:?} to {:?}",
                 expected_type.return_type
             );
         }
@@ -252,10 +495,36 @@ impl Compiler {
         &mut self,
         conditional: Vec<(Box<AstNode>, Vec<AstNode>)>,
         unconditional: Vec<AstNode>,
+        loc: Loc,
     ) -> Result<Type> {
         let mut write_start_to = Vec::new();
         for branch in conditional.clone() {
-            self.compile_node(*branch.0)?;
+            let cond_type = self.compile_node(*branch.0.clone())?;
+
+            if !cond_type.can_convert_to(Type::Bool) {
+                let mut colors = ColorGenerator::new();
+                let a = colors.next();
+                Report::build(ReportKind::Error, loc.clone())
+                    .with_message(format!(
+                        "Unable to convert from {cond_type:?} to {:?}",
+                        Type::Bool
+                    ))
+                    .with_label(
+                        Label::new(branch.0.loc())
+                            .with_message(format!(
+                                "Expression has type {cond_type:?} but Bool was expected"
+                            ))
+                            .with_color(a),
+                    )
+                    .finish()
+                    .print((
+                        loc.0.clone(),
+                        Source::from(fs::read_to_string(loc.0).unwrap()),
+                    ))
+                    .unwrap();
+                bail!("Unable to convert from {cond_type:?} to {:?}", Type::Bool);
+            }
+
             self.emit_opcode(Opcode::CondJump);
             write_start_to.push(self.current_function.as_ref().unwrap().code.len());
             self.emit_u32(u32::MAX);
@@ -302,9 +571,32 @@ impl Compiler {
         Ok(Type::Unit)
     }
 
-    fn compile_while(&mut self, cond: AstNode, body: Vec<AstNode>) -> Result<Type> {
+    fn compile_while(&mut self, cond: AstNode, body: Vec<AstNode>, loc: Loc) -> Result<Type> {
         let start = self.current_function.as_ref().unwrap().code.len() as u32;
-        self.compile_node(cond)?;
+        let cond_type = self.compile_node(cond.clone())?;
+        if !cond_type.can_convert_to(Type::Bool) {
+            let mut colors = ColorGenerator::new();
+            let a = colors.next();
+            Report::build(ReportKind::Error, loc.clone())
+                .with_message(format!(
+                    "Unable to convert from {cond_type:?} to {:?}",
+                    Type::Bool
+                ))
+                .with_label(
+                    Label::new(cond.loc())
+                        .with_message(format!(
+                            "Expression has type {cond_type:?} but Bool was expected"
+                        ))
+                        .with_color(a),
+                )
+                .finish()
+                .print((
+                    loc.0.clone(),
+                    Source::from(fs::read_to_string(loc.0).unwrap()),
+                ))
+                .unwrap();
+            bail!("Unable to convert from {cond_type:?} to {:?}", Type::Bool);
+        }
 
         self.emit_opcode(Opcode::CondJump);
         self.emit_u32(self.current_function.as_ref().unwrap().code.len() as u32 + 9);
@@ -329,9 +621,10 @@ impl Compiler {
     fn compile_function_def(
         &mut self,
         name: &str,
-        args: Vec<(String, String)>,
+        args: Vec<(String, String, Loc)>,
         _return_type: Option<String>,
         body: Vec<AstNode>,
+        _loc: Loc,
     ) -> Result<Type> {
         if let Some(cf) = self.current_function.clone()
             && cf.code.last().is_none_or(|&op| op != Opcode::Ret as u8)
@@ -358,7 +651,8 @@ impl Compiler {
 
         for arg in args {
             let idx = self.next_local;
-            self.locals.insert(arg.0, (Type::from_string(arg.1)?, idx));
+            self.locals
+                .insert(arg.0, (Type::from_string(arg.1)?, idx, false, arg.2));
             self.next_local += 1;
         }
 
@@ -369,19 +663,61 @@ impl Compiler {
         Ok(Type::Unit)
     }
 
-    fn compile_function_call(&mut self, name: &str, args: Vec<AstNode>) -> Result<Type> {
+    fn compile_function_call(&mut self, name: &str, args: Vec<AstNode>, loc: Loc) -> Result<Type> {
         if self.native_registry.has(name) {
-            self.compile_native_call(name, args)
+            self.compile_native_call(name, args, loc)
         } else {
             let symbol = &self
                 .symbol_registry
                 .get(name)
-                .ok_or_else(|| anyhow::anyhow!("Function {name} not found"))?
+                .ok_or_else(|| {
+                    let mut colors = ColorGenerator::new();
+                    let a = colors.next();
+                    Report::build(ReportKind::Error, loc.clone())
+                        .with_message(format!("Function {name:?} not found"))
+                        .with_label(
+                            Label::new(loc.clone())
+                                .with_message(format!("Could not find a function named {name:?}"))
+                                .with_color(a),
+                        )
+                        .finish()
+                        .print((
+                            loc.0.clone(),
+                            Source::from(fs::read_to_string(loc.0.clone()).unwrap()),
+                        ))
+                        .unwrap();
+                    anyhow::anyhow!("Function {name:?} not found")
+                })?
                 .clone();
 
             if (args.len() as u8) != symbol.arity {
+                let mut colors = ColorGenerator::new();
+                let a = colors.next();
+                let b = colors.next();
+                Report::build(ReportKind::Error, loc.clone())
+                    .with_message(format!(
+                        "Expected {:?} arguments, got {:?}",
+                        symbol.arity,
+                        args.len()
+                    ))
+                    .with_label(
+                        Label::new(loc.clone())
+                            .with_message(format!("Calling with {:?} arguments", args.len()))
+                            .with_color(a),
+                    )
+                    .with_label(
+                        Label::new(symbol.loc.clone())
+                            .with_message(format!("Expected {:?} arguments", symbol.arity))
+                            .with_color(b),
+                    )
+                    .finish()
+                    .print((
+                        loc.0.clone(),
+                        Source::from(fs::read_to_string(loc.0).unwrap()),
+                    ))
+                    .unwrap();
                 bail!(
-                    "Function requires {} arguments, got: {}",
+                    "Expected {:?} arguments, got {:?}",
                     symbol.arity,
                     args.len()
                 );
@@ -389,11 +725,35 @@ impl Compiler {
 
             for (i, arg) in args.iter().enumerate() {
                 let actual_type = self.compile_node(arg.clone())?;
-                if !actual_type.can_convert_to(symbol.arg_types[i].clone()) {
+                if !actual_type.can_convert_to(symbol.arg_types[i].0.clone()) {
+                    let mut colors = ColorGenerator::new();
+                    let a = colors.next();
+                    let b = colors.next();
+                    Report::build(ReportKind::Error, loc.clone())
+                        .with_message(format!(
+                            "Unable to convert from {actual_type:?} to {:?}",
+                            symbol.arg_types[i].0
+                        ))
+                        .with_label(
+                            Label::new(arg.loc())
+                                .with_message(format!("Expression has type {actual_type:?}"))
+                                .with_color(a),
+                        )
+                        .with_label(
+                            Label::new(symbol.arg_types[i].1.clone())
+                                .with_message(format!("Expected type {:?}", symbol.arg_types[i].0))
+                                .with_color(b),
+                        )
+                        .finish()
+                        .print((
+                            loc.0.clone(),
+                            Source::from(fs::read_to_string(loc.0).unwrap()),
+                        ))
+                        .unwrap();
                     bail!(
-                        "Cannot convert from {actual_type:?} to {:?} calling {name}",
-                        symbol.arg_types[0]
-                    )
+                        "Unable to convert from {actual_type:?} to {:?}",
+                        symbol.arg_types[i].0
+                    );
                 }
                 self.pop_stack();
             }
@@ -410,18 +770,53 @@ impl Compiler {
         }
     }
 
-    fn compile_native_call(&mut self, name: &str, args: Vec<AstNode>) -> Result<Type> {
+    fn compile_native_call(&mut self, name: &str, args: Vec<AstNode>, loc: Loc) -> Result<Type> {
         let (_, arity, vararg, return_type) = self.native_registry.get(name).unwrap().clone();
 
         if vararg {
             if (args.len() as u8) < arity {
-                bail!(
-                    "Function requires at least {arity} arguments, got: {}",
-                    args.len()
-                );
+                let mut colors = ColorGenerator::new();
+                let a = colors.next();
+                Report::build(ReportKind::Error, loc.clone())
+                    .with_message(format!(
+                        "Expected at least {:?} arguments, got {:?}",
+                        arity,
+                        args.len()
+                    ))
+                    .with_label(
+                        Label::new(loc.clone())
+                            .with_message(format!("Calling with {:?} arguments", args.len()))
+                            .with_color(a),
+                    )
+                    .finish()
+                    .print((
+                        loc.0.clone(),
+                        Source::from(fs::read_to_string(loc.0).unwrap()),
+                    ))
+                    .unwrap();
+                bail!("Compilation error");
             }
         } else if args.len() as u8 != arity {
-            bail!("Function requires {arity} arguments, got: {}", args.len());
+            let mut colors = ColorGenerator::new();
+            let a = colors.next();
+            Report::build(ReportKind::Error, loc.clone())
+                .with_message(format!(
+                    "Expected {:?} arguments, got {:?}",
+                    arity,
+                    args.len()
+                ))
+                .with_label(
+                    Label::new(loc.clone())
+                        .with_message(format!("Calling with {:?} arguments", args.len()))
+                        .with_color(a),
+                )
+                .finish()
+                .print((
+                    loc.0.clone(),
+                    Source::from(fs::read_to_string(loc.0).unwrap()),
+                ))
+                .unwrap();
+            bail!("Compilation error");
         }
 
         let name_idx = self.add_constant(Constant::String(name.to_string()));
