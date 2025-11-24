@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs};
+use std::fs;
 
 use anyhow::{Result, bail};
 use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
@@ -8,20 +8,21 @@ use crate::{
     native::NativeRegistry,
     parser::{AstNode, Loc},
     registry::SymbolRegistry,
+    scope::{ScopeManager, Variable},
     types::{Mutability, Type},
 };
 
 pub struct Compiler {
     bytecode: BytecodeFile,
     current_function: Option<Function>,
-    // Name, (Type, ID, mutability, definition location)
-    locals: HashMap<String, (Type, u16, bool, Loc)>,
     next_local: u16,
     max_stack: u16,
     current_stack_depth: u16,
 
     native_registry: NativeRegistry,
     symbol_registry: SymbolRegistry,
+
+    scope_manager: ScopeManager,
 }
 
 impl Default for Compiler {
@@ -29,13 +30,14 @@ impl Default for Compiler {
         Compiler {
             bytecode: BytecodeFile::new(0),
             current_function: None,
-            locals: HashMap::new(),
             next_local: 0,
             max_stack: 0,
             current_stack_depth: 0,
 
             native_registry: NativeRegistry::new(),
             symbol_registry: SymbolRegistry::new(),
+
+            scope_manager: ScopeManager::new(),
         }
     }
 }
@@ -114,9 +116,9 @@ impl Compiler {
     }
 
     fn compile_load_var(&mut self, ident: &str, loc: Loc) -> Result<Type> {
-        let local_idx = self
-            .locals
-            .get(ident)
+        let var = self
+            .scope_manager
+            .lookup(ident)
             .ok_or_else(|| {
                 let mut colors = ColorGenerator::new();
                 let a = colors.next();
@@ -137,9 +139,9 @@ impl Compiler {
             })?
             .clone();
         self.emit_opcode(Opcode::LoadLocal);
-        self.emit_u16(local_idx.1);
+        self.emit_u16(var.local_idx);
         self.push_stack();
-        Ok(local_idx.0)
+        Ok(var.ty)
     }
 
     fn compile_binary_op(
@@ -268,55 +270,30 @@ impl Compiler {
         expr: AstNode,
         loc: Loc,
     ) -> Result<Type> {
-        if let Some(local_idx) = self.locals.get(name) {
-            let mut colors = ColorGenerator::new();
-            let a = colors.next();
-            let b = colors.next();
-            Report::build(ReportKind::Error, loc.clone())
-                .with_message(format!("Variable {name} already defined"))
-                .with_label(
-                    Label::new(local_idx.3.clone())
-                        .with_message("Varaible already defined here")
-                        .with_color(b),
-                )
-                .with_label(
-                    Label::new(loc.clone())
-                        .with_message("Variable redefined here")
-                        .with_color(a),
-                )
-                .with_help("Either mutate the first definition or rename the second one.")
-                .finish()
-                .print((
-                    loc.0.clone(),
-                    Source::from(fs::read_to_string(loc.0).unwrap()),
-                ))
-                .unwrap();
-            bail!("Variable {name} already defined");
-        }
-
-        let local_idx = {
-            let idx = self.next_local;
-            let data_type = if let Some(data_type) = data_type.clone() {
-                Type::from_string(data_type.0)?
-            } else {
-                Type::infer(expr.clone())?
-            };
-            self.locals.insert(
-                name.to_string(),
-                (data_type.clone(), idx, mutability, loc.clone()),
-            );
-            self.next_local += 1;
-            (data_type, idx)
+        let dt = if let Some(data_type) = data_type.clone() {
+            Type::from_string(data_type.0)?
+        } else {
+            Type::infer(expr.clone())?
         };
 
+        let var = Variable {
+            ty: dt.clone(),
+            local_idx: self.next_local,
+            mutable: mutability,
+            definition_loc: loc.clone(),
+        };
+        self.next_local += 1;
+
+        self.scope_manager.define(name.to_string(), var.clone())?;
+
         let actual_type = self.compile_node(expr.clone())?;
-        if !actual_type.can_convert_to(local_idx.0.clone()) {
+        if !actual_type.can_convert_to(dt.clone()) {
             let mut colors = ColorGenerator::new();
             let a = colors.next();
             let mut builder = Report::build(ReportKind::Error, loc.clone())
                 .with_message(format!(
                     "Unable to convert from {actual_type:?} to {:?}",
-                    local_idx.0
+                    dt.clone()
                 ))
                 .with_label(
                     Label::new(expr.loc())
@@ -348,14 +325,11 @@ impl Compiler {
                     Source::from(fs::read_to_string(loc.0).unwrap()),
                 ))
                 .unwrap();
-            bail!(
-                "Unable to convert from {actual_type:?} to {:?}",
-                local_idx.0
-            );
+            bail!("Unable to convert from {actual_type:?} to {dt:?}");
         }
 
         self.emit_opcode(Opcode::StoreLocal);
-        self.emit_u16(local_idx.1);
+        self.emit_u16(var.local_idx);
 
         self.pop_stack();
         Ok(Type::Unit)
@@ -365,9 +339,9 @@ impl Compiler {
         match name {
             AstNode::Ident(n, _) => {
                 let name = &n;
-                let local_idx = self
-                    .locals
-                    .get(name)
+                let var = self
+                    .scope_manager
+                    .lookup(name)
                     .ok_or_else(|| {
                         let mut colors = ColorGenerator::new();
                         let a = colors.next();
@@ -391,18 +365,18 @@ impl Compiler {
                     .clone();
 
                 let actual_type = self.compile_node(expr.clone())?;
-                if !actual_type.can_convert_to(local_idx.0.clone()) {
+                if !actual_type.can_convert_to(var.ty.clone()) {
                     let mut colors = ColorGenerator::new();
                     let a = colors.next();
                     let b = colors.next();
                     Report::build(ReportKind::Error, loc.clone())
                         .with_message(format!(
                             "Unable to convert from {actual_type:?} to {:?}",
-                            local_idx.0
+                            var.ty
                         ))
                         .with_label(
-                            Label::new(local_idx.3.clone())
-                                .with_message(format!("Expected type {:?}", local_idx.0))
+                            Label::new(var.definition_loc.clone())
+                                .with_message(format!("Expected type {:?}", var.ty))
                                 .with_color(b),
                         )
                         .with_label(
@@ -416,20 +390,17 @@ impl Compiler {
                             Source::from(fs::read_to_string(loc.0).unwrap()),
                         ))
                         .unwrap();
-                    bail!(
-                        "Unable to convert from {actual_type:?} to {:?}",
-                        local_idx.0
-                    );
+                    bail!("Unable to convert from {actual_type:?} to {:?}", var.ty);
                 }
 
-                if !local_idx.2 {
+                if !var.mutable {
                     let mut colors = ColorGenerator::new();
                     let a = colors.next();
                     let b = colors.next();
                     Report::build(ReportKind::Error, loc.clone())
                         .with_message(format!("Variable {name} is immutable"))
                         .with_label(
-                            Label::new(local_idx.3)
+                            Label::new(var.definition_loc)
                                 .with_message("Variable was not defined as mutable")
                                 .with_color(b),
                         )
@@ -448,7 +419,7 @@ impl Compiler {
                 }
 
                 self.emit_opcode(Opcode::StoreLocal);
-                self.emit_u16(local_idx.1);
+                self.emit_u16(var.local_idx);
 
                 self.pop_stack();
                 Ok(Type::Unit)
@@ -559,8 +530,8 @@ impl Compiler {
         match expr.clone() {
             AstNode::Ident(name, ident_loc) => {
                 let var = self
-                    .locals
-                    .get(&name)
+                    .scope_manager
+                    .lookup(&name)
                     .ok_or_else(|| {
                         let mut colors = ColorGenerator::new();
                         let a = colors.next();
@@ -581,7 +552,7 @@ impl Compiler {
                     })?
                     .clone();
 
-                if mutable && !var.2 {
+                if mutable && !var.mutable {
                     let mut colors = ColorGenerator::new();
                     let a = colors.next();
                     let b = colors.next();
@@ -590,7 +561,7 @@ impl Compiler {
                             "Cannot take mutable reference to immutable variable {name}"
                         ))
                         .with_label(
-                            Label::new(var.3.clone())
+                            Label::new(var.definition_loc.clone())
                                 .with_message("Variable defined as immutable here")
                                 .with_color(b),
                         )
@@ -610,12 +581,12 @@ impl Compiler {
                 }
 
                 self.emit_opcode(Opcode::LoadRef);
-                self.emit_u16(var.1);
+                self.emit_u16(var.local_idx);
                 self.emit_byte(if mutable { 1 } else { 0 });
                 self.push_stack();
 
                 Ok(Type::Reference(
-                    Box::new(var.0.clone()),
+                    Box::new(var.ty.clone()),
                     if mutable {
                         Mutability::Mutable
                     } else {
@@ -767,9 +738,13 @@ impl Compiler {
             self.current_function.as_mut().unwrap().code[offset..(4 + offset)]
                 .copy_from_slice(&addr_to_write[..4]);
 
+            self.scope_manager.enter_scope();
+
             for node in branch.1.clone() {
                 self.compile_node(node)?;
             }
+
+            self.scope_manager.exit_scope();
 
             self.emit_opcode(Opcode::Jump);
             write_end_to.push(self.current_function.as_ref().unwrap().code.len());
@@ -782,9 +757,13 @@ impl Compiler {
             .copy_from_slice(&addr_to_write[..4]);
 
         if !unconditional.is_empty() {
+            self.scope_manager.enter_scope();
+
             for node in unconditional {
                 self.compile_node(node)?;
             }
+
+            self.scope_manager.exit_scope();
 
             addr_to_write = (self.current_function.as_ref().unwrap().code.len()).to_le_bytes();
         }
@@ -830,9 +809,13 @@ impl Compiler {
         let write_end = self.current_function.as_ref().unwrap().code.len();
         self.emit_u32(u32::MAX);
 
+        self.scope_manager.enter_scope();
+
         for n in body {
             self.compile_node(n)?;
         }
+
+        self.scope_manager.exit_scope();
 
         self.emit_opcode(Opcode::Jump);
         self.emit_u32(start);
@@ -872,13 +855,18 @@ impl Compiler {
             max_stack: 0,
             code: vec![],
         });
-        self.locals = HashMap::new();
+        self.scope_manager.reset_to_root();
         self.next_local = 0;
 
         for arg in args {
             let idx = self.next_local;
-            self.locals
-                .insert(arg.0, (Type::from_string(arg.1)?, idx, false, arg.2));
+            let var = Variable {
+                ty: Type::from_string(arg.1)?,
+                local_idx: idx,
+                mutable: false,
+                definition_loc: arg.2,
+            };
+            self.scope_manager.define(arg.0, var)?;
             self.next_local += 1;
         }
 

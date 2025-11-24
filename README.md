@@ -17,6 +17,7 @@ Rocca's syntax is heavily inspired :tm: by Rust.
 - [x] Native function interface (currently only `print()` is available)
 - [x] Chained comparison (`0 < a < 10`)
 - [x] Disassembler for bytecode
+- [x] Proper scoped variable tracking
 
 ### Being worked on
 - [ ] Custom data types (structs and enums)

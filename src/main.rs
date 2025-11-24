@@ -14,6 +14,7 @@ pub mod disassembler;
 pub mod native;
 pub mod parser;
 pub mod registry;
+pub mod scope;
 pub mod types;
 pub mod vm;
 
