@@ -34,7 +34,7 @@ pub enum AstNode {
     Comparison(Box<AstNode>, String, Box<AstNode>, Loc),
     // Name, Mutable?, Optional data type and location, Assignment
     Let(String, bool, Option<(String, Loc)>, Box<AstNode>, Loc),
-    Assign(String, Box<AstNode>, Loc),
+    Assign(Box<AstNode>, Box<AstNode>, Loc),
     Return(Option<Box<AstNode>>, Loc),
     Call(String, Vec<AstNode>, Loc),
     // Name, Argument[(Name, Data type)], Optional return type, Body
@@ -47,6 +47,8 @@ pub enum AstNode {
     ),
     If(Vec<(Box<AstNode>, Vec<AstNode>)>, Vec<AstNode>, Loc),
     While(Box<AstNode>, Vec<AstNode>, Loc),
+    Ref(Box<AstNode>, bool, Loc),
+    Deref(Box<AstNode>, Loc),
 }
 
 impl AstNode {
@@ -65,6 +67,8 @@ impl AstNode {
             AstNode::FnDef(_, _, _, _, loc) => loc.clone(),
             AstNode::If(_, _, loc) => loc.clone(),
             AstNode::While(_, _, loc) => loc.clone(),
+            AstNode::Ref(_, _, loc) => loc.clone(),
+            AstNode::Deref(_, loc) => loc.clone(),
         }
     }
 }
@@ -214,6 +218,27 @@ fn build_ast(pair: Pair<Rule>, file: &str) -> Result<AstNode> {
 
             Ok(left)
         }
+        Rule::ref_expr => {
+            let mut pairs = pair.clone().into_inner();
+            let loc = to_loc(file, pair);
+
+            let first = pairs.next().unwrap();
+            let (mutable, expr_pair) = if matches!(first.as_rule(), Rule::mut_specifier) {
+                (true, pairs.next().unwrap())
+            } else {
+                (false, first)
+            };
+
+            let expr = build_ast(expr_pair, file)?;
+            Ok(AstNode::Ref(Box::new(expr), mutable, loc))
+        }
+        Rule::deref => {
+            let mut pairs = pair.clone().into_inner();
+            Ok(AstNode::Deref(
+                Box::new(build_ast(pairs.next().unwrap(), file)?),
+                to_loc(file, pair),
+            ))
+        }
         Rule::factor => {
             let mut pairs = pair.clone().into_inner();
             let first = pairs.next().expect("Need at least one pair");
@@ -228,6 +253,7 @@ fn build_ast(pair: Pair<Rule>, file: &str) -> Result<AstNode> {
                     to_loc(file, pair),
                 )),
                 Rule::primary => build_ast(first, file),
+                Rule::ref_expr => build_ast(first, file),
                 _ => Err(anyhow::anyhow!("Unexpected rule: {:?}", first.as_rule())),
             }
         }
@@ -276,9 +302,13 @@ fn build_ast(pair: Pair<Rule>, file: &str) -> Result<AstNode> {
                 return Err(ParserError::WrongPairCount(2, pairs.len()).into());
             }
 
-            let name = pairs.next().unwrap().as_str().trim().to_string();
+            let name = build_ast(pairs.next().unwrap(), file)?;
             let expr = build_ast(pairs.next().unwrap(), file)?;
-            Ok(AstNode::Assign(name, Box::new(expr), to_loc(file, pair)))
+            Ok(AstNode::Assign(
+                Box::new(name),
+                Box::new(expr),
+                to_loc(file, pair),
+            ))
         }
         Rule::return_stmt => {
             let mut pairs = pair.clone().into_inner();

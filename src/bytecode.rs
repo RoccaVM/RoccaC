@@ -89,6 +89,11 @@ pub enum Opcode {
     Ret = 0x62,
     CallNative = 0x63,
     CondJump = 0x64,
+
+    // References
+    LoadRef = 0x70,
+    LoadRefValue = 0x71,
+    StoreRef = 0x72,
 }
 
 impl Default for BytecodeFile {

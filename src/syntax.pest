@@ -1,7 +1,7 @@
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 
 number = @{ ASCII_DIGIT+ }
-ident = { ASCII_ALPHA ~ ASCII_ALPHANUMERIC* }
+ident = { ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 string = ${ "\"" ~ inner ~ "\"" }
 inner = @{ char* }
 char = {
@@ -10,6 +10,9 @@ char = {
     | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
 call = { ident ~ "(" ~ (logic ~ ("," ~ logic)*)? ~ ")" }
+
+ref_expr = { "&" ~ mut_specifier? ~ primary }
+deref = { "*" ~ ident }
 
 PLUS = @{ "+" }
 MINUS = @{ "-" }
@@ -20,8 +23,8 @@ BANG = @{ "!" }
 
 expr = { term ~ ((PLUS | MINUS) ~ term)* }
 term = { factor ~ ((STAR | SLASH | PERCENT) ~ factor)* }
-factor = { ((MINUS | BANG) ~ primary) | primary }
-primary = { "(" ~ logic ~ ")" | call | number | ident | string }
+factor = { ((MINUS | BANG) ~ primary) | ref_expr | primary }
+primary = { "(" ~ logic ~ ")" | call | number | deref | ident | string }
 
 GT = @{ ">" }
 LT = @{ "<" }
@@ -41,10 +44,11 @@ logic = { comparison ~ (logical_op ~ comparison)* }
 mut_specifier = { "mut" }
 ref_specifier = { "ref" | "&" }
 
-data_type = { ident ~ ("<" ~ data_type ~ ">")? }
+data_type = { "&" ~ "mut"? ~ base_type | base_type }
+base_type = { ident ~ ("<" ~ data_type ~ ">")? }
 
 let_stmt = { "let" ~ mut_specifier? ~ ident ~ (":" ~ data_type)? ~ "=" ~ logic }
-assign_stmt = { ident ~ "=" ~ logic }
+assign_stmt = { (deref | ident) ~ "=" ~ logic }
 return_stmt = { "return" ~ logic? }
 
 if_stmt = { "if" ~ logic ~ "{" ~ stmt* ~ "}" ~ else_if_stmt* ~ else_stmt? }

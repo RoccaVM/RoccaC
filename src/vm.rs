@@ -10,7 +10,15 @@ pub enum Value {
     Integer(i64),
     Boolean(bool),
     String(String),
+    Reference(RefHandle),
     Null,
+}
+
+#[derive(Clone, Debug)]
+pub struct RefHandle {
+    pub frame_idx: usize,
+    pub local_idx: usize,
+    pub mutable: bool,
 }
 
 impl Value {
@@ -36,6 +44,12 @@ impl Value {
             Value::Boolean(b) => b.to_string(),
             Value::String(s) => s.clone(),
             Value::Null => "null".to_string(),
+            Value::Reference(h) => format!(
+                "&{}(frame: {}, local: {})",
+                if h.mutable { "mut " } else { "" },
+                h.frame_idx,
+                h.local_idx
+            ),
         }
     }
 }
@@ -44,12 +58,13 @@ impl Value {
 pub struct VM {
     bytecode: BytecodeFile,
     stack: Vec<Value>,
-    locals: Vec<Value>,
     pc: usize,
     running: bool,
     native_registry: NativeRegistry,
     call_stack: Vec<CallFrame>,
     current_function: usize,
+    current_frame_id: usize,
+    next_frame_id: usize,
 }
 
 #[derive(Debug)]
@@ -57,6 +72,7 @@ struct CallFrame {
     function_index: usize,
     return_pc: usize,
     locals: Vec<Value>,
+    frame_id: usize,
 }
 
 impl VM {
@@ -76,7 +92,16 @@ impl VM {
         self.running = true;
 
         let main_func = &self.bytecode.functions[entry_idx].clone();
-        self.locals = vec![Value::Null; main_func.locals_count as usize];
+
+        self.current_frame_id = self.next_frame_id;
+        self.next_frame_id += 1;
+
+        self.call_stack.push(CallFrame {
+            function_index: entry_idx,
+            return_pc: 0,
+            locals: vec![Value::Null; main_func.locals_count as usize],
+            frame_id: self.current_frame_id,
+        });
 
         self.current_function = entry_idx;
 
@@ -84,6 +109,14 @@ impl VM {
 
         self.execute_function()?;
         Ok(())
+    }
+
+    fn current_frame(&self) -> &CallFrame {
+        self.call_stack.last().expect("No call frame")
+    }
+
+    fn current_frame_mut(&mut self) -> &mut CallFrame {
+        self.call_stack.last_mut().expect("No call frame")
     }
 
     fn execute_function(&mut self) -> Result<()> {
@@ -133,21 +166,21 @@ impl VM {
                 }
                 Ok(Opcode::LoadLocal) => {
                     let index = self.read_u16(code)? as usize;
-                    if index >= self.locals.len() {
+                    if index >= self.current_frame().locals.len() {
                         bail!("Invalid local variable index: {index}");
                     }
-                    self.stack.push(self.locals[index].clone());
+                    self.stack.push(self.current_frame().locals[index].clone());
                 }
                 Ok(Opcode::StoreLocal) => {
                     let index = self.read_u16(code)? as usize;
-                    if index >= self.locals.len() {
+                    if index >= self.current_frame().locals.len() {
                         bail!("Invalid local variable index: {index}");
                     }
                     let value = self
                         .stack
                         .pop()
                         .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
-                    self.locals[index] = value;
+                    self.current_frame_mut().locals[index] = value;
                 }
 
                 Ok(Opcode::Add) => self.binary_op(|a, b| a + b)?,
@@ -198,6 +231,67 @@ impl VM {
                     }
                 }
 
+                Ok(Opcode::LoadRef) => {
+                    let index = self.read_u16(code)? as usize;
+                    let is_mutable = self.read_byte(code)? != 0;
+
+                    let frame = self.current_frame();
+                    if index > frame.locals.len() {
+                        bail!("Invalid local variable index: {index}");
+                    }
+
+                    self.stack.push(Value::Reference(RefHandle {
+                        frame_idx: frame.frame_id,
+                        local_idx: index,
+                        mutable: is_mutable,
+                    }))
+                }
+                Ok(Opcode::LoadRefValue) => {
+                    let ref_val = self
+                        .stack
+                        .pop()
+                        .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
+
+                    if let Value::Reference(handle) = ref_val {
+                        let value = self
+                            .call_stack
+                            .iter()
+                            .find(|f| f.frame_id == handle.frame_idx)
+                            .ok_or_else(|| anyhow::anyhow!("Reference to invalid frame"))?
+                            .locals[handle.local_idx]
+                            .clone();
+
+                        self.stack.push(value);
+                    } else {
+                        bail!("Expected reference, got: {ref_val:?}");
+                    }
+                }
+                Ok(Opcode::StoreRef) => {
+                    let ref_val = self
+                        .stack
+                        .pop()
+                        .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
+                    let value = self
+                        .stack
+                        .pop()
+                        .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
+
+                    if let Value::Reference(handle) = ref_val {
+                        if !handle.mutable {
+                            bail!("Cannot mutate through immutable reference");
+                        }
+
+                        let frame = self
+                            .call_stack
+                            .iter_mut()
+                            .find(|f| f.frame_id == handle.frame_idx)
+                            .ok_or_else(|| anyhow::anyhow!("Reference to invalid frame"))?;
+                        frame.locals[handle.local_idx] = value;
+                    } else {
+                        bail!("Expected reference, got: {ref_val:?}");
+                    }
+                }
+
                 Err(_) => bail!("Unknown opcode: {opcode}"),
             }
         }
@@ -235,20 +329,24 @@ impl VM {
         }
         args.reverse();
 
-        let saved_frame = CallFrame {
-            function_index: self.current_function,
+        let frame_id = self.next_frame_id;
+        self.next_frame_id += 1;
+
+        let mut new_locals = args;
+        while new_locals.len() < func.locals_count as usize {
+            new_locals.push(Value::Null);
+        }
+
+        self.call_stack.push(CallFrame {
+            function_index: func_idx,
             return_pc: self.pc,
-            locals: std::mem::take(&mut self.locals),
-        };
-        self.call_stack.push(saved_frame);
+            locals: new_locals,
+            frame_id,
+        });
 
         self.current_function = func_idx;
+        self.current_frame_id = frame_id;
         self.pc = 0;
-
-        self.locals = args;
-        while self.locals.len() < func.locals_count as usize {
-            self.locals.push(Value::Null);
-        }
 
         self.execute_function()?;
 
@@ -295,10 +393,12 @@ impl VM {
             None
         };
 
-        if let Some(frame) = self.call_stack.pop() {
+        let old_frame = self.call_stack.pop().unwrap();
+
+        if let Some(frame) = self.call_stack.last() {
             self.current_function = frame.function_index;
-            self.pc = frame.return_pc;
-            self.locals = frame.locals;
+            self.current_frame_id = frame.frame_id;
+            self.pc = old_frame.return_pc;
 
             if let Some(val) = return_value {
                 self.stack.push(val);

@@ -29,16 +29,26 @@ pub enum Mutability {
 
 impl Type {
     pub fn from_string(ts: String) -> Result<Self> {
-        if ts == "Int" {
-            Ok(Self::Int)
-        } else if ts == "Bool" {
-            Ok(Self::Bool)
-        } else if ts == "String" {
-            Ok(Self::String)
-        } else if ts == "Unit" {
-            Ok(Self::Unit)
-        } else {
-            Err(anyhow::anyhow!("Unable to convert '{ts}' to a type"))
+        if ts.starts_with("&mut") {
+            let inner = ts.strip_prefix("&mut").unwrap();
+            return Ok(Self::Reference(
+                Box::new(Self::from_string(inner.to_string())?),
+                Mutability::Mutable,
+            ));
+        } else if ts.starts_with("&") {
+            let inner = ts.strip_prefix("&").unwrap();
+            return Ok(Self::Reference(
+                Box::new(Self::from_string(inner.to_string())?),
+                Mutability::Immutable,
+            ));
+        }
+
+        match ts.trim() {
+            "Int" => Ok(Self::Int),
+            "Bool" => Ok(Self::Bool),
+            "String" => Ok(Self::String),
+            "Unit" => Ok(Self::Unit),
+            _ => Err(anyhow::anyhow!("Unable to convert '{ts}' to a type")),
         }
     }
 

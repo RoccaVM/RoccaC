@@ -8,7 +8,7 @@ use crate::{
     native::NativeRegistry,
     parser::{AstNode, Loc},
     registry::SymbolRegistry,
-    types::Type,
+    types::{Mutability, Type},
 };
 
 pub struct Compiler {
@@ -82,7 +82,7 @@ impl Compiler {
             AstNode::Let(name, mutability, data_type, expr, loc) => {
                 self.compile_let(&name, mutability, data_type, *expr, loc)
             }
-            AstNode::Assign(name, expr, loc) => self.compile_assign(&name, *expr, loc),
+            AstNode::Assign(name, expr, loc) => self.compile_assign(*name, *expr, loc),
             AstNode::Call(name, args, loc) => self.compile_function_call(&name, args, loc),
             AstNode::Return(expr, loc) => self.compile_return(expr, loc),
             AstNode::FnDef(name, args, return_type, body, loc) => {
@@ -92,6 +92,8 @@ impl Compiler {
                 self.compile_if(conditional, unconditional, loc)
             }
             AstNode::While(cond, stmts, loc) => self.compile_while(*cond, stmts, loc),
+            AstNode::Ref(expr, mutable, loc) => self.compile_ref(*expr, mutable, loc),
+            AstNode::Deref(expr, loc) => self.compile_deref(*expr, loc),
         }
     }
 
@@ -359,92 +361,316 @@ impl Compiler {
         Ok(Type::Unit)
     }
 
-    fn compile_assign(&mut self, name: &str, expr: AstNode, loc: Loc) -> Result<Type> {
-        let local_idx = self
-            .locals
-            .get(name)
-            .ok_or_else(|| {
+    fn compile_assign(&mut self, name: AstNode, expr: AstNode, loc: Loc) -> Result<Type> {
+        match name {
+            AstNode::Ident(n, _) => {
+                let name = &n;
+                let local_idx = self
+                    .locals
+                    .get(name)
+                    .ok_or_else(|| {
+                        let mut colors = ColorGenerator::new();
+                        let a = colors.next();
+                        Report::build(ReportKind::Error, loc.clone())
+                            .with_message(format!("Variable {name:?} not found"))
+                            .with_label(
+                                Label::new(loc.clone())
+                                    .with_message(format!(
+                                        "Could not find a variable named {name:?}"
+                                    ))
+                                    .with_color(a),
+                            )
+                            .finish()
+                            .print((
+                                loc.0.clone(),
+                                Source::from(fs::read_to_string(loc.0.clone()).unwrap()),
+                            ))
+                            .unwrap();
+                        anyhow::anyhow!("Varaible {name:?} not found")
+                    })?
+                    .clone();
+
+                let actual_type = self.compile_node(expr.clone())?;
+                if !actual_type.can_convert_to(local_idx.0.clone()) {
+                    let mut colors = ColorGenerator::new();
+                    let a = colors.next();
+                    let b = colors.next();
+                    Report::build(ReportKind::Error, loc.clone())
+                        .with_message(format!(
+                            "Unable to convert from {actual_type:?} to {:?}",
+                            local_idx.0
+                        ))
+                        .with_label(
+                            Label::new(local_idx.3.clone())
+                                .with_message(format!("Expected type {:?}", local_idx.0))
+                                .with_color(b),
+                        )
+                        .with_label(
+                            Label::new(expr.loc())
+                                .with_message(format!("Expression has type {actual_type:?}"))
+                                .with_color(a),
+                        )
+                        .finish()
+                        .print((
+                            loc.0.clone(),
+                            Source::from(fs::read_to_string(loc.0).unwrap()),
+                        ))
+                        .unwrap();
+                    bail!(
+                        "Unable to convert from {actual_type:?} to {:?}",
+                        local_idx.0
+                    );
+                }
+
+                if !local_idx.2 {
+                    let mut colors = ColorGenerator::new();
+                    let a = colors.next();
+                    let b = colors.next();
+                    Report::build(ReportKind::Error, loc.clone())
+                        .with_message(format!("Variable {name} is immutable"))
+                        .with_label(
+                            Label::new(local_idx.3)
+                                .with_message("Variable was not defined as mutable")
+                                .with_color(b),
+                        )
+                        .with_label(
+                            Label::new(loc.clone())
+                                .with_message("Variable must be mutable to allow assignment")
+                                .with_color(a),
+                        )
+                        .finish()
+                        .print((
+                            loc.0.clone(),
+                            Source::from(fs::read_to_string(loc.0).unwrap()),
+                        ))
+                        .unwrap();
+                    bail!("Variable {name} is immutable");
+                }
+
+                self.emit_opcode(Opcode::StoreLocal);
+                self.emit_u16(local_idx.1);
+
+                self.pop_stack();
+                Ok(Type::Unit)
+            }
+            AstNode::Deref(node, loc) => {
+                let node_loc = node.loc();
+                let actual_type = self.compile_node(expr.clone())?;
+                let expr_type = self.compile_node(*node)?;
+                match expr_type.clone() {
+                    Type::Reference(inner, mutable) => match mutable {
+                        Mutability::Mutable => {
+                            if !actual_type.can_convert_to(*inner.clone()) {
+                                let mut colors = ColorGenerator::new();
+                                let a = colors.next();
+                                let b = colors.next();
+                                Report::build(ReportKind::Error, loc.clone())
+                                    .with_message(format!(
+                                        "Unable to convert from {actual_type:?} to {inner:?}"
+                                    ))
+                                    .with_label(
+                                        Label::new(loc.clone())
+                                            .with_message(format!("Expected type {inner:?}"))
+                                            .with_color(b),
+                                    )
+                                    .with_label(
+                                        Label::new(expr.loc())
+                                            .with_message(format!(
+                                                "Expression has type {actual_type:?}"
+                                            ))
+                                            .with_color(a),
+                                    )
+                                    .finish()
+                                    .print((
+                                        loc.0.clone(),
+                                        Source::from(fs::read_to_string(loc.0).unwrap()),
+                                    ))
+                                    .unwrap();
+                                bail!("Unable to convert from {actual_type:?} to {inner:?}");
+                            }
+                            self.emit_opcode(Opcode::StoreRef);
+                            Ok(Type::Unit)
+                        }
+                        Mutability::Immutable => {
+                            let mut colors = ColorGenerator::new();
+                            let a = colors.next();
+                            Report::build(ReportKind::Error, loc.clone())
+                                .with_message(
+                                    "Cannot dereference non-reference type: {expr_type:?}",
+                                )
+                                .with_label(
+                                    Label::new(node_loc)
+                                        .with_message("This expression has type {expr_type:?}")
+                                        .with_color(a),
+                                )
+                                .finish()
+                                .print((
+                                    loc.0.clone(),
+                                    Source::from(fs::read_to_string(loc.0).unwrap()),
+                                ))
+                                .unwrap();
+                            bail!("Cannot dereference non-reference type: {expr_type:?}");
+                        }
+                    },
+                    _ => {
+                        let mut colors = ColorGenerator::new();
+                        let a = colors.next();
+                        Report::build(ReportKind::Error, loc.clone())
+                            .with_message("Cannot dereference non-reference type: {expr_type:?}")
+                            .with_label(
+                                Label::new(node_loc)
+                                    .with_message("This expression has type {expr_type:?}")
+                                    .with_color(a),
+                            )
+                            .finish()
+                            .print((
+                                loc.0.clone(),
+                                Source::from(fs::read_to_string(loc.0).unwrap()),
+                            ))
+                            .unwrap();
+                        bail!("Cannot dereference non-reference type: {expr_type:?}");
+                    }
+                }
+            }
+            _ => {
                 let mut colors = ColorGenerator::new();
                 let a = colors.next();
                 Report::build(ReportKind::Error, loc.clone())
-                    .with_message(format!("Variable {name:?} not found"))
+                    .with_message(format!(
+                        "Assignment is only possible to an Ident or a Reference, got: {name:?}"
+                    ))
                     .with_label(
-                        Label::new(loc.clone())
-                            .with_message(format!("Could not find a variable named {name:?}"))
+                        Label::new(name.loc())
+                            .with_message("Node is of type: {name:?}")
                             .with_color(a),
                     )
                     .finish()
                     .print((
                         loc.0.clone(),
-                        Source::from(fs::read_to_string(loc.0.clone()).unwrap()),
+                        Source::from(fs::read_to_string(loc.0).unwrap()),
                     ))
                     .unwrap();
-                anyhow::anyhow!("Varaible {name:?} not found")
-            })?
-            .clone();
-
-        let actual_type = self.compile_node(expr.clone())?;
-        if !actual_type.can_convert_to(local_idx.0.clone()) {
-            let mut colors = ColorGenerator::new();
-            let a = colors.next();
-            let b = colors.next();
-            Report::build(ReportKind::Error, loc.clone())
-                .with_message(format!(
-                    "Unable to convert from {actual_type:?} to {:?}",
-                    local_idx.0
-                ))
-                .with_label(
-                    Label::new(local_idx.3.clone())
-                        .with_message(format!("Expected type {:?}", local_idx.0))
-                        .with_color(b),
-                )
-                .with_label(
-                    Label::new(expr.loc())
-                        .with_message(format!("Expression has type {actual_type:?}"))
-                        .with_color(a),
-                )
-                .finish()
-                .print((
-                    loc.0.clone(),
-                    Source::from(fs::read_to_string(loc.0).unwrap()),
-                ))
-                .unwrap();
-            bail!(
-                "Unable to convert from {actual_type:?} to {:?}",
-                local_idx.0
-            );
+                bail!("Assignment is only possible to an Ident or a Reference, got: {name:?}");
+            }
         }
+    }
 
-        if !local_idx.2 {
-            let mut colors = ColorGenerator::new();
-            let a = colors.next();
-            let b = colors.next();
-            Report::build(ReportKind::Error, loc.clone())
-                .with_message(format!("Variable {name} is immutable"))
-                .with_label(
-                    Label::new(local_idx.3)
-                        .with_message("Variable was not defined as mutable")
-                        .with_color(b),
-                )
-                .with_label(
-                    Label::new(loc.clone())
-                        .with_message("Variable must be mutable to allow assignment")
-                        .with_color(a),
-                )
-                .finish()
-                .print((
-                    loc.0.clone(),
-                    Source::from(fs::read_to_string(loc.0).unwrap()),
+    fn compile_ref(&mut self, expr: AstNode, mutable: bool, loc: Loc) -> Result<Type> {
+        match expr.clone() {
+            AstNode::Ident(name, ident_loc) => {
+                let var = self
+                    .locals
+                    .get(&name)
+                    .ok_or_else(|| {
+                        let mut colors = ColorGenerator::new();
+                        let a = colors.next();
+                        Report::build(ReportKind::Error, ident_loc.clone())
+                            .with_message(format!("Variable {name:?} not found"))
+                            .with_label(
+                                Label::new(ident_loc.clone())
+                                    .with_message(format!("Could not find variable {name:?}"))
+                                    .with_color(a),
+                            )
+                            .finish()
+                            .print((
+                                ident_loc.0.clone(),
+                                Source::from(fs::read_to_string(ident_loc.0).unwrap()),
+                            ))
+                            .unwrap();
+                        anyhow::anyhow!("Variable {name:?} not found")
+                    })?
+                    .clone();
+
+                if mutable && !var.2 {
+                    let mut colors = ColorGenerator::new();
+                    let a = colors.next();
+                    let b = colors.next();
+                    Report::build(ReportKind::Error, loc.clone())
+                        .with_message(format!(
+                            "Cannot take mutable reference to immutable variable {name}"
+                        ))
+                        .with_label(
+                            Label::new(var.3.clone())
+                                .with_message("Variable defined as immutable here")
+                                .with_color(b),
+                        )
+                        .with_label(
+                            Label::new(loc.clone())
+                                .with_message("Attempting to take mutable reference here")
+                                .with_color(a),
+                        )
+                        .with_help("Change the variable to be mutable with 'let mut'")
+                        .finish()
+                        .print((
+                            loc.0.clone(),
+                            Source::from(fs::read_to_string(loc.0).unwrap()),
+                        ))
+                        .unwrap();
+                    bail!("Cannot take mutable reference to immutable variable");
+                }
+
+                self.emit_opcode(Opcode::LoadRef);
+                self.emit_u16(var.1);
+                self.emit_byte(if mutable { 1 } else { 0 });
+                self.push_stack();
+
+                Ok(Type::Reference(
+                    Box::new(var.0.clone()),
+                    if mutable {
+                        Mutability::Mutable
+                    } else {
+                        Mutability::Immutable
+                    },
                 ))
-                .unwrap();
-            bail!("Variable {name} is immutable");
+            }
+            _ => {
+                let mut colors = ColorGenerator::new();
+                let a = colors.next();
+                Report::build(ReportKind::Error, loc.clone())
+                    .with_message("Can only take references to variables")
+                    .with_label(
+                        Label::new(expr.loc())
+                            .with_message("Cannot take reference to this expression")
+                            .with_color(a),
+                    )
+                    .with_help("Assign the expression to a variable first, then take a reference")
+                    .finish()
+                    .print((
+                        loc.0.clone(),
+                        Source::from(fs::read_to_string(loc.0).unwrap()),
+                    ))
+                    .unwrap();
+                bail!("Can only take references to variables");
+            }
         }
+    }
 
-        self.emit_opcode(Opcode::StoreLocal);
-        self.emit_u16(local_idx.1);
-
-        self.pop_stack();
-        Ok(Type::Unit)
+    fn compile_deref(&mut self, expr: AstNode, loc: Loc) -> Result<Type> {
+        let expr_type = self.compile_node(expr.clone())?;
+        match expr_type {
+            Type::Reference(inner, _) => {
+                self.emit_opcode(Opcode::LoadRefValue);
+                Ok(*inner)
+            }
+            _ => {
+                let mut colors = ColorGenerator::new();
+                let a = colors.next();
+                Report::build(ReportKind::Error, loc.clone())
+                    .with_message("Cannot dereference non-reference type: {expr_type:?}")
+                    .with_label(
+                        Label::new(expr.loc())
+                            .with_message("This expression has type {expr_type:?}")
+                            .with_color(a),
+                    )
+                    .finish()
+                    .print((
+                        loc.0.clone(),
+                        Source::from(fs::read_to_string(loc.0).unwrap()),
+                    ))
+                    .unwrap();
+                bail!("Cannot dereference non-reference type: {expr_type:?}");
+            }
+        }
     }
 
     fn compile_return(&mut self, expr: Option<Box<AstNode>>, loc: Loc) -> Result<Type> {

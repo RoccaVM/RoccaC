@@ -17,6 +17,25 @@ fn main() {
     a = a - 1;
   }
   print("\n");
+
+  let mut b = 5;
+  pass_by_value(b);
+  pass_by_ref(&b);
+
+  mutate_by_ref(&mut b);
+  print(b, "\n");
+}
+
+fn pass_by_value(a: Int) {
+  print(a, "\n");
+}
+
+fn pass_by_ref(a: &Int) {
+  print(*a, "\n");
+}
+
+fn mutate_by_ref(a: &mut Int) {
+  *a = 10;
 }
 
 fn add(a: Int, b: Int) -> Int {
