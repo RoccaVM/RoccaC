@@ -1064,6 +1064,9 @@ impl Compiler {
     }
 
     fn add_constant(&mut self, constant: Constant) -> u32 {
+        if let Some(index) = self.bytecode.const_pool.iter().position(|c| c == &constant) {
+            return index as u32;
+        }
         let index = self.bytecode.const_pool.len();
         self.bytecode.const_pool.push(constant);
         index as u32

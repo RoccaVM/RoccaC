@@ -31,7 +31,7 @@ pub struct Header {
     pub flags: Flags,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Constant {
     Int(i64),
     String(String),
