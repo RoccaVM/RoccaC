@@ -18,6 +18,7 @@ Rocca's syntax is heavily inspired :tm: by Rust.
 - [x] Chained comparison (`0 < a < 10`)
 - [x] Disassembler for bytecode
 - [x] Proper scoped variable tracking
+- [x] Basic borrow checker
 
 ### Being worked on
 - [ ] Custom data types (structs and enums)
@@ -25,7 +26,6 @@ Rocca's syntax is heavily inspired :tm: by Rust.
 
 ### Planned
 - [ ] Heap allocations
-- [ ] Basic borrow checker
 - [ ] Support for C types and FFI
 - [ ] Standard library
 

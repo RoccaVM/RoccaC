@@ -8,6 +8,7 @@ use clap::Parser;
 
 use crate::{bytecode::BytecodeFile, vm::VM};
 
+pub mod borrow_checker;
 pub mod bytecode;
 pub mod compiler;
 pub mod disassembler;

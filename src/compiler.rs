@@ -4,6 +4,7 @@ use anyhow::{Result, bail};
 use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
 
 use crate::{
+    borrow_checker::BorrowChecker,
     bytecode::{BytecodeFile, Constant, Function, Opcode},
     native::NativeRegistry,
     parser::{AstNode, Loc},
@@ -23,6 +24,7 @@ pub struct Compiler {
     symbol_registry: SymbolRegistry,
 
     scope_manager: ScopeManager,
+    borrow_checker: BorrowChecker,
 }
 
 impl Default for Compiler {
@@ -38,6 +40,7 @@ impl Default for Compiler {
             symbol_registry: SymbolRegistry::new(),
 
             scope_manager: ScopeManager::new(),
+            borrow_checker: BorrowChecker::new(),
         }
     }
 }
@@ -132,12 +135,21 @@ impl Compiler {
                     .finish()
                     .print((
                         loc.0.clone(),
-                        Source::from(fs::read_to_string(loc.0).unwrap()),
+                        Source::from(fs::read_to_string(loc.0.clone()).unwrap()),
                     ))
                     .unwrap();
                 anyhow::anyhow!("Varaible {ident:?} not found")
             })?
             .clone();
+
+        // TODO: Fix when I add traits
+        let is_copy_type = matches!(var.ty, Type::Int | Type::Bool | Type::Reference(_, _));
+
+        if !is_copy_type {
+            self.borrow_checker
+                .mark_moved(ident.to_string(), loc.clone())?;
+        }
+
         self.emit_opcode(Opcode::LoadLocal);
         self.emit_u16(var.local_idx);
         self.push_stack();
@@ -337,7 +349,9 @@ impl Compiler {
 
     fn compile_assign(&mut self, name: AstNode, expr: AstNode, loc: Loc) -> Result<Type> {
         match name {
-            AstNode::Ident(n, _) => {
+            AstNode::Ident(n, ident_loc) => {
+                self.borrow_checker.can_use(&n, ident_loc.clone())?;
+
                 let name = &n;
                 let var = self
                     .scope_manager
@@ -427,10 +441,15 @@ impl Compiler {
             AstNode::Deref(node, loc) => {
                 let node_loc = node.loc();
                 let actual_type = self.compile_node(expr.clone())?;
-                let expr_type = self.compile_node(*node)?;
+                let expr_type = self.compile_node(*node.clone())?;
                 match expr_type.clone() {
                     Type::Reference(inner, mutable) => match mutable {
                         Mutability::Mutable => {
+                            if let AstNode::Ident(var_name, _) = *node {
+                                self.borrow_checker
+                                    .can_mutate_through_ref(&var_name, loc.clone())?;
+                            }
+
                             if !actual_type.can_convert_to(*inner.clone()) {
                                 let mut colors = ColorGenerator::new();
                                 let a = colors.next();
@@ -579,6 +598,17 @@ impl Compiler {
                         .unwrap();
                     bail!("Cannot take mutable reference to immutable variable");
                 }
+
+                let mutability = if mutable {
+                    Mutability::Mutable
+                } else {
+                    Mutability::Immutable
+                };
+
+                self.borrow_checker
+                    .can_borrow(&name, mutability.clone(), loc.clone())?;
+                self.borrow_checker
+                    .add_borrow(name.clone(), mutability, loc.clone());
 
                 self.emit_opcode(Opcode::LoadRef);
                 self.emit_u16(var.local_idx);
@@ -739,11 +769,13 @@ impl Compiler {
                 .copy_from_slice(&addr_to_write[..4]);
 
             self.scope_manager.enter_scope();
+            self.borrow_checker.enter_scope();
 
             for node in branch.1.clone() {
                 self.compile_node(node)?;
             }
 
+            self.borrow_checker.exit_scope();
             self.scope_manager.exit_scope();
 
             self.emit_opcode(Opcode::Jump);
@@ -758,11 +790,13 @@ impl Compiler {
 
         if !unconditional.is_empty() {
             self.scope_manager.enter_scope();
+            self.borrow_checker.enter_scope();
 
             for node in unconditional {
                 self.compile_node(node)?;
             }
 
+            self.borrow_checker.exit_scope();
             self.scope_manager.exit_scope();
 
             addr_to_write = (self.current_function.as_ref().unwrap().code.len()).to_le_bytes();
@@ -810,11 +844,13 @@ impl Compiler {
         self.emit_u32(u32::MAX);
 
         self.scope_manager.enter_scope();
+        self.borrow_checker.enter_scope();
 
         for n in body {
             self.compile_node(n)?;
         }
 
+        self.borrow_checker.exit_scope();
         self.scope_manager.exit_scope();
 
         self.emit_opcode(Opcode::Jump);
@@ -856,6 +892,7 @@ impl Compiler {
             code: vec![],
         });
         self.scope_manager.reset_to_root();
+        self.borrow_checker.reset();
         self.next_local = 0;
 
         for arg in args {
@@ -937,7 +974,21 @@ impl Compiler {
                 );
             }
 
+            let mut created_borrows = Vec::new();
+
             for (i, arg) in args.iter().enumerate() {
+                if let AstNode::Ref(expr, is_mutable, _) = arg
+                    && let AstNode::Ident(var_name, _) = expr.as_ref()
+                {
+                    let mutability = if *is_mutable {
+                        Mutability::Mutable
+                    } else {
+                        Mutability::Immutable
+                    };
+
+                    created_borrows.push((var_name.clone(), mutability));
+                }
+
                 let actual_type = self.compile_node(arg.clone())?;
                 if !actual_type.can_convert_to(symbol.arg_types[i].0.clone()) {
                     let mut colors = ColorGenerator::new();
@@ -978,6 +1029,10 @@ impl Compiler {
 
             if symbol.returns {
                 self.push_stack();
+            }
+
+            for (var_name, _) in created_borrows {
+                self.borrow_checker.release_borrows(&var_name);
             }
 
             Ok(symbol.return_type.clone())
@@ -1035,7 +1090,20 @@ impl Compiler {
 
         let name_idx = self.add_constant(Constant::String(name.to_string()));
 
+        let mut created_borrows = Vec::new();
+
         for arg in args.iter() {
+            if let AstNode::Ref(expr, is_mutable, _) = arg
+                && let AstNode::Ident(var_name, _) = expr.as_ref()
+            {
+                let mutability = if *is_mutable {
+                    Mutability::Mutable
+                } else {
+                    Mutability::Immutable
+                };
+                created_borrows.push((var_name.clone(), mutability));
+            }
+
             self.compile_node(arg.clone())?;
             self.pop_stack();
         }
@@ -1046,6 +1114,10 @@ impl Compiler {
 
         if !matches!(return_type, Type::Unit) {
             self.push_stack();
+        }
+
+        for (var_name, _) in created_borrows {
+            self.borrow_checker.release_borrows(&var_name);
         }
 
         Ok(return_type)
