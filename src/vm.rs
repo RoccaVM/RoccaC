@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 
 use crate::{
     bytecode::{BytecodeFile, Constant, Opcode},
+    heap::{Heap, HeapPtr},
     native::NativeRegistry,
 };
 
@@ -11,6 +12,7 @@ pub enum Value {
     Boolean(bool),
     String(String),
     Reference(RefHandle),
+    HeapRef(HeapPtr),
     Null,
 }
 
@@ -50,6 +52,7 @@ impl Value {
                 h.frame_idx,
                 h.local_idx
             ),
+            Value::HeapRef(ptr) => format!("Box({ptr})"),
         }
     }
 }
@@ -65,6 +68,7 @@ pub struct VM {
     current_function: usize,
     current_frame_id: usize,
     next_frame_id: usize,
+    heap: Heap,
 }
 
 #[derive(Debug)]
@@ -122,6 +126,8 @@ impl VM {
     fn execute_function(&mut self) -> Result<()> {
         let func = self.bytecode.functions[self.current_function].clone();
         let code = &func.code;
+
+        let heap_scope = self.heap.enter_scope();
 
         while self.pc < code.len() {
             let opcode = code[self.pc];
@@ -292,9 +298,62 @@ impl VM {
                     }
                 }
 
+                Ok(Opcode::HeapAlloc) => {
+                    let value = self
+                        .stack
+                        .pop()
+                        .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
+                    let ptr = self.heap.allocate(value);
+                    self.stack.push(Value::HeapRef(ptr));
+                }
+                Ok(Opcode::HeapLoad) => {
+                    let ptr_val = self
+                        .stack
+                        .pop()
+                        .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
+                    if let Value::HeapRef(ptr) = ptr_val {
+                        let value = self
+                            .heap
+                            .get(ptr)
+                            .ok_or_else(|| anyhow::anyhow!("Invalid heap pointer"))?
+                            .clone();
+                        self.stack.push(value);
+                    } else {
+                        bail!("Expected heap reference");
+                    }
+                }
+                Ok(Opcode::HeapStore) => {
+                    let ptr_val = self
+                        .stack
+                        .pop()
+                        .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
+                    let value = self
+                        .stack
+                        .pop()
+                        .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
+                    if let Value::HeapRef(ptr) = ptr_val {
+                        self.heap.set(ptr, value)?;
+                    } else {
+                        bail!("Expected heap reference");
+                    }
+                }
+                Ok(Opcode::HeapFree) => {
+                    let ptr_val = self
+                        .stack
+                        .pop()
+                        .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
+                    if let Value::HeapRef(ptr) = ptr_val {
+                        self.heap.free(ptr)?;
+                    } else {
+                        bail!("Expected heap reference");
+                    }
+                }
+
                 Err(_) => bail!("Unknown opcode: {opcode}"),
             }
         }
+
+        self.heap.exit_scope(heap_scope);
 
         Ok(())
     }

@@ -94,6 +94,12 @@ pub enum Opcode {
     LoadRef = 0x70,
     LoadRefValue = 0x71,
     StoreRef = 0x72,
+
+    // Heap
+    HeapAlloc = 0x80,
+    HeapLoad = 0x81,
+    HeapStore = 0x82,
+    HeapFree = 0x83,
 }
 
 impl Default for BytecodeFile {

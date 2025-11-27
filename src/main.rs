@@ -12,6 +12,7 @@ pub mod borrow_checker;
 pub mod bytecode;
 pub mod compiler;
 pub mod disassembler;
+pub mod heap;
 pub mod native;
 pub mod parser;
 pub mod registry;

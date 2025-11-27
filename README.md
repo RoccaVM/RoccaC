@@ -19,13 +19,13 @@ Rocca's syntax is heavily inspired :tm: by Rust.
 - [x] Disassembler for bytecode
 - [x] Proper scoped variable tracking
 - [x] Basic borrow checker
+- [x] Heap allocations
 
 ### Being worked on
 - [ ] Custom data types (structs and enums)
 - [ ] Extended native function interface
 
 ### Planned
-- [ ] Heap allocations
 - [ ] Support for C types and FFI
 - [ ] Standard library
 
