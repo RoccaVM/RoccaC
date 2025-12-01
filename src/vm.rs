@@ -115,6 +115,22 @@ impl VM {
         Ok(())
     }
 
+    pub fn heap_allocate(&mut self, value: Value) -> HeapPtr {
+        self.heap.allocate(value)
+    }
+
+    pub fn heap_get(&self, ptr: HeapPtr) -> Option<&Value> {
+        self.heap.get(ptr)
+    }
+
+    pub fn heap_set(&mut self, ptr: HeapPtr, value: Value) -> Result<()> {
+        self.heap.set(ptr, value)
+    }
+
+    pub fn heap_free(&mut self, ptr: HeapPtr) -> Result<()> {
+        self.heap.free(ptr)
+    }
+
     fn current_frame(&self) -> &CallFrame {
         self.call_stack.last().expect("No call frame")
     }
@@ -433,7 +449,7 @@ impl VM {
             }
             args.reverse();
 
-            let result = native_func.0(&args)?;
+            let result = native_func.0(self, &args)?;
 
             if !matches!(result, Value::Null) {
                 self.stack.push(result);

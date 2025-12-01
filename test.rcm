@@ -24,6 +24,13 @@ fn main() {
 
   mutate_by_ref(&mut b);
   print(b, "\n");
+
+  let x = box(20);
+  print(*x, "\n");
+  *x = 50;
+  print(*x, "\n");
+  drop(x);
+  print(*x, "\n");
 }
 
 fn pass_by_value(a: Int) {

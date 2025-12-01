@@ -13,9 +13,12 @@ pub enum Type {
     Struct(StructId),
     Enum(EnumId),
     Reference(Box<Type>, Mutability),
+    Box(Box<Type>),
     Array(Box<Type>, Option<usize>),
     Generic(String),
     GenericInstance(StructId, Vec<Type>),
+    Never,
+    Unknown,
 }
 
 type StructId = u32;
@@ -43,11 +46,17 @@ impl Type {
             ));
         }
 
+        if ts.starts_with("Box<") && ts.ends_with(">") {
+            let inner = &ts[4..ts.len() - 1];
+            return Ok(Self::Box(Box::new(Self::from_string(inner.to_string())?)));
+        }
+
         match ts.trim() {
             "Int" => Ok(Self::Int),
             "Bool" => Ok(Self::Bool),
             "String" => Ok(Self::String),
             "Unit" => Ok(Self::Unit),
+            "Never" | "!" => Ok(Self::Never),
             _ => Err(anyhow::anyhow!("Unable to convert '{ts}' to a type")),
         }
     }
@@ -56,7 +65,37 @@ impl Type {
         match ast {
             AstNode::Number(_, _) => Ok(Self::Int),
             AstNode::String(_, _) => Ok(Self::String),
-            _ => Err(anyhow::anyhow!("Unable to infer type: {ast:?}")),
+            AstNode::Ref(inner, mutable, _) => {
+                let inner_type = Self::infer(*inner)?;
+                Ok(Self::Reference(
+                    Box::new(inner_type),
+                    if mutable {
+                        Mutability::Mutable
+                    } else {
+                        Mutability::Immutable
+                    },
+                ))
+            }
+            AstNode::Deref(inner, _) => {
+                let inner_type = Self::infer(*inner)?;
+                match inner_type {
+                    Type::Reference(t, _) => Ok(*t),
+                    Type::Box(t) => Ok(*t),
+                    _ => Err(anyhow::anyhow!("Cannot dereference non-reference type")),
+                }
+            }
+            AstNode::BinaryOp(_, op, _, _) => match op.as_str() {
+                "+" | "-" | "*" | "/" | "%" => Ok(Self::Int),
+                "&&" | "||" => Ok(Self::Bool),
+                _ => Ok(Self::Unknown),
+            },
+            AstNode::Comparison(_, _, _, _) => Ok(Self::Bool),
+            AstNode::UnaryOp(_, op, _) => match op.as_str() {
+                "-" => Ok(Self::Int),
+                "!" => Ok(Self::Bool),
+                _ => Ok(Self::Unknown),
+            },
+            _ => Ok(Self::Unknown),
         }
     }
 
@@ -65,10 +104,52 @@ impl Type {
             return true;
         }
 
-        match self {
-            Type::Int => matches!(other, Type::Bool),
-            Type::Bool => matches!(other, Type::Int),
+        match (self, other) {
+            (Type::Int, Type::Bool) => true,
+            (Type::Bool, Type::Int) => true,
+            (
+                Type::Reference(inner1, Mutability::Mutable),
+                Type::Reference(inner2, Mutability::Immutable),
+            ) => inner1.can_convert_to(*inner2),
+            (Type::Reference(inner1, m1), Type::Reference(inner2, m2)) => {
+                *m1 == m2 && inner1.can_convert_to(*inner2)
+            }
+            (Type::Box(inner1), Type::Box(inner2)) => *inner1 == inner2,
+            (Type::Unknown, _) => true,
+            (_, Type::Unknown) => true,
             _ => false,
+        }
+    }
+
+    pub fn is_copy(&self) -> bool {
+        match self {
+            Type::Int | Type::Bool | Type::Unit => true,
+            Type::Reference(_, _) => true,
+            Type::Array(inner, _) => inner.is_copy(),
+            _ => false,
+        }
+    }
+
+    pub fn deref(&self) -> Option<&Type> {
+        match self {
+            Type::Reference(inner, _) => Some(inner),
+            Type::Box(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    pub fn unify(&self, other: &Self) -> Option<Self> {
+        match (self, other) {
+            (Type::Unknown, t) | (t, Type::Unknown) => Some(t.clone()),
+            (a, b) if a == b => Some(a.clone()),
+
+            (Type::Reference(i1, m1), Type::Reference(i2, m2)) if m1 == m2 => i1
+                .unify(i2)
+                .map(|inner| Type::Reference(Box::new(inner), m1.clone())),
+
+            (Type::Box(i1), Type::Box(i2)) => i1.unify(i2).map(|inner| Type::Box(Box::new(inner))),
+
+            _ => None,
         }
     }
 }

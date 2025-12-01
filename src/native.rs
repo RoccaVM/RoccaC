@@ -3,11 +3,14 @@ use std::{
     io::{self, Write},
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
-use crate::{types::Type, vm::Value};
+use crate::{
+    types::Type,
+    vm::{VM, Value},
+};
 
-pub type NativeFunction = fn(&[Value]) -> Result<Value>;
+pub type NativeFunction = fn(&mut VM, &[Value]) -> Result<Value>;
 
 // (fn, artiy, vararg, return_type)
 pub type NativeFnDesc = (NativeFunction, u8, bool, Type);
@@ -30,6 +33,7 @@ impl NativeRegistry {
         };
 
         registry.register_io_functions();
+        registry.register_memory_functions();
 
         registry
     }
@@ -46,12 +50,17 @@ impl NativeRegistry {
         self.register("print", (native_print, 1, true, Type::Unit));
     }
 
+    fn register_memory_functions(&mut self) {
+        self.register("box", (native_box, 1, false, Type::Unknown));
+        self.register("drop", (native_drop, 1, false, Type::Unit));
+    }
+
     pub fn has(&self, name: &str) -> bool {
         self.functions.contains_key(name)
     }
 }
 
-fn native_print(args: &[Value]) -> Result<Value> {
+fn native_print(_vm: &mut VM, args: &[Value]) -> Result<Value> {
     if args.is_empty() {
         return Ok(Value::Null);
     }
@@ -60,4 +69,27 @@ fn native_print(args: &[Value]) -> Result<Value> {
     print!("{}", output.join(" "));
     io::stdout().flush()?;
     Ok(Value::Null)
+}
+
+fn native_box(vm: &mut VM, args: &[Value]) -> Result<Value> {
+    if args.len() != 1 {
+        bail!("box() expects exactly one argument");
+    }
+
+    let value = args[0].clone();
+    let ptr = vm.heap_allocate(value);
+    Ok(Value::HeapRef(ptr))
+}
+
+fn native_drop(vm: &mut VM, args: &[Value]) -> Result<Value> {
+    if args.len() != 1 {
+        bail!("drop() expects exactly one argument");
+    }
+
+    if let Value::HeapRef(ptr) = &args[0] {
+        vm.heap_free(*ptr).map_err(|e| anyhow::anyhow!(e))?;
+        Ok(Value::Null)
+    } else {
+        bail!("drop() expects a Box value");
+    }
 }

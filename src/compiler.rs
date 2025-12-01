@@ -102,6 +102,59 @@ impl Compiler {
         }
     }
 
+    fn infer_type(&self, node: &AstNode) -> Result<Type> {
+        let s = Type::infer(node.clone())?;
+        match s {
+            Type::Unknown => match node {
+                AstNode::Ident(name, loc) => {
+                    let var = self
+                        .scope_manager
+                        .lookup(name)
+                        .ok_or_else(|| {
+                            let mut colors = ColorGenerator::new();
+                            let a = colors.next();
+                            Report::build(ReportKind::Error, loc.clone())
+                                .with_message(format!("Variable {name:?} not found"))
+                                .with_label(
+                                    Label::new(loc.clone())
+                                        .with_message(format!(
+                                            "Could not find a variable named {name:?}"
+                                        ))
+                                        .with_color(a),
+                                )
+                                .finish()
+                                .print((
+                                    loc.0.clone(),
+                                    Source::from(fs::read_to_string(loc.0.clone()).unwrap()),
+                                ))
+                                .unwrap();
+                            anyhow::anyhow!("Varaible {name:?} not found")
+                        })?
+                        .clone();
+                    Ok(var.ty.clone())
+                }
+                AstNode::Call(name, args, _) => {
+                    if let Some((_, _, _, return_type)) = self.native_registry.get(name) {
+                        if name == "box" && !args.is_empty() {
+                            let arg_type = self.infer_type(&args[0])?;
+                            return Ok(Type::Box(Box::new(arg_type)));
+                        }
+
+                        return Ok(return_type.clone());
+                    }
+
+                    if let Some(symbol) = self.symbol_registry.get(name) {
+                        Ok(symbol.return_type.clone())
+                    } else {
+                        Ok(Type::Unknown)
+                    }
+                }
+                _ => Ok(Type::Unknown),
+            },
+            _ => Ok(s),
+        }
+    }
+
     fn compile_number(&mut self, val: i64, _loc: Loc) -> Result<Type> {
         let index = self.add_constant(Constant::Int(val));
         self.emit_opcode(Opcode::ConstI64);
@@ -285,7 +338,7 @@ impl Compiler {
         let dt = if let Some(data_type) = data_type.clone() {
             Type::from_string(data_type.0)?
         } else {
-            Type::infer(expr.clone())?
+            self.infer_type(&expr)?
         };
 
         let var = Variable {
@@ -502,6 +555,43 @@ impl Compiler {
                             bail!("Cannot dereference non-reference type: {expr_type:?}");
                         }
                     },
+                    Type::Box(inner) => {
+                        if let AstNode::Ident(var_name, _) = *node {
+                            self.borrow_checker
+                                .can_mutate_through_ref(&var_name, loc.clone())?;
+                        }
+
+                        if !actual_type.can_convert_to(*inner.clone()) {
+                            let mut colors = ColorGenerator::new();
+                            let a = colors.next();
+                            let b = colors.next();
+                            Report::build(ReportKind::Error, loc.clone())
+                                .with_message(format!(
+                                    "Unable to convert from {actual_type:?} to {inner:?}"
+                                ))
+                                .with_label(
+                                    Label::new(loc.clone())
+                                        .with_message(format!("Expected type {inner:?}"))
+                                        .with_color(b),
+                                )
+                                .with_label(
+                                    Label::new(expr.loc())
+                                        .with_message(format!(
+                                            "Expression has type {actual_type:?}"
+                                        ))
+                                        .with_color(a),
+                                )
+                                .finish()
+                                .print((
+                                    loc.0.clone(),
+                                    Source::from(fs::read_to_string(loc.0).unwrap()),
+                                ))
+                                .unwrap();
+                            bail!("Unable to convert from {actual_type:?} to {inner:?}");
+                        }
+                        self.emit_opcode(Opcode::HeapStore);
+                        Ok(Type::Unit)
+                    }
                     _ => {
                         let mut colors = ColorGenerator::new();
                         let a = colors.next();
@@ -651,6 +741,10 @@ impl Compiler {
         match expr_type {
             Type::Reference(inner, _) => {
                 self.emit_opcode(Opcode::LoadRefValue);
+                Ok(*inner)
+            }
+            Type::Box(inner) => {
+                self.emit_opcode(Opcode::HeapLoad);
                 Ok(*inner)
             }
             _ => {
