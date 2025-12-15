@@ -4,7 +4,7 @@ use anyhow::{Ok, Result};
 
 use crate::{
     parser::{AstNode, Loc},
-    types::Type,
+    types::{Type, TypeRegistry},
 };
 
 pub struct SymbolRegistry {
@@ -39,7 +39,7 @@ impl SymbolRegistry {
         }
     }
 
-    pub fn traverse(&mut self, node: AstNode) -> Result<()> {
+    pub fn traverse(&mut self, node: AstNode, registry: &TypeRegistry) -> Result<()> {
         match node {
             AstNode::FnDef(name, args, return_type, body, loc) => {
                 let mut ret = -1;
@@ -52,7 +52,7 @@ impl SymbolRegistry {
                 }
 
                 let rt = if let Some(return_type) = return_type {
-                    Type::from_string(return_type)?
+                    Type::from_string(return_type, registry)?
                 } else {
                     Type::Unit
                 };
@@ -65,7 +65,7 @@ impl SymbolRegistry {
                         arity: args.len() as u8,
                         arg_types: args
                             .into_iter()
-                            .map(|a| Type::from_string(a.1).map(|t| (t, a.2)))
+                            .map(|a| Type::from_string(a.1, registry).map(|t| (t, a.2)))
                             .collect::<Result<Vec<(Type, Loc)>, anyhow::Error>>()?,
                         returns: ret == 1,
                         index: self.current_fn_index,

@@ -4,6 +4,7 @@ use crate::{
     bytecode::{BytecodeFile, Constant, Opcode},
     heap::{Heap, HeapPtr},
     native::NativeRegistry,
+    types::StructId,
 };
 
 #[derive(Clone, Debug)]
@@ -13,6 +14,7 @@ pub enum Value {
     String(String),
     Reference(RefHandle),
     HeapRef(HeapPtr),
+    Struct(StructId, Vec<Value>),
     Null,
 }
 
@@ -53,6 +55,7 @@ impl Value {
                 h.local_idx
             ),
             Value::HeapRef(ptr) => format!("Box({ptr})"),
+            Value::Struct(id, fields) => format!("Struct({id}, {fields:?})"),
         }
     }
 }
@@ -362,6 +365,122 @@ impl VM {
                         self.heap.free(ptr)?;
                     } else {
                         bail!("Expected heap reference");
+                    }
+                }
+
+                Ok(Opcode::StructNew) => {
+                    let type_id = self.read_u32(code)?;
+                    let field_count = self.read_u16(code)?;
+
+                    let mut fields = Vec::with_capacity(field_count as usize);
+                    for _ in 0..field_count {
+                        fields.push(
+                            self.stack
+                                .pop()
+                                .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?,
+                        );
+                    }
+                    fields.reverse();
+
+                    self.stack.push(Value::Struct(type_id, fields));
+                }
+                Ok(Opcode::FieldGet) => {
+                    let field_index = self.read_u16(code)?;
+                    let struct_val = self
+                        .stack
+                        .pop()
+                        .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
+
+                    match struct_val {
+                        Value::Struct(_, f) => {
+                            let field = f
+                                .get(field_index as usize)
+                                .ok_or_else(|| anyhow::anyhow!("Field index out of bounds"))?;
+                            self.stack.push(field.clone());
+                        }
+                        Value::HeapRef(ptr) => {
+                            let struct_val = self
+                                .heap
+                                .get(ptr)
+                                .ok_or_else(|| anyhow::anyhow!("Invalid heap poniter"))?;
+                            if let Value::Struct(_, f) = struct_val {
+                                let field = f
+                                    .get(field_index as usize)
+                                    .ok_or_else(|| anyhow::anyhow!("Field index out of bounds"))?;
+                                self.stack.push(field.clone());
+                            } else {
+                                bail!("Expected struct on heap");
+                            }
+                        }
+                        Value::Reference(handle) => {
+                            let struct_val = self
+                                .call_stack
+                                .iter()
+                                .find(|f| f.frame_id == handle.frame_idx)
+                                .ok_or_else(|| anyhow::anyhow!("Invalid frame reference"))?
+                                .locals[handle.local_idx]
+                                .clone();
+                            if let Value::Struct(_, f) = struct_val {
+                                let field = f
+                                    .get(field_index as usize)
+                                    .ok_or_else(|| anyhow::anyhow!("Field index out of bounds"))?;
+                                self.stack.push(field.clone());
+                            } else {
+                                bail!("Expected struct on heap");
+                            }
+                        }
+                        _ => bail!("Cannot get field from type {struct_val:?}"),
+                    }
+                }
+                Ok(Opcode::FieldSet) => {
+                    let field_index = self.read_u16(code)?;
+                    let value = self
+                        .stack
+                        .pop()
+                        .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
+                    let struct_val = self
+                        .stack
+                        .pop()
+                        .ok_or_else(|| anyhow::anyhow!("Stack underflow"))?;
+
+                    match struct_val {
+                        Value::Struct(id, mut f) => {
+                            if field_index as usize > f.len() {
+                                bail!("Field index out of bounds");
+                            }
+                            f[field_index as usize] = value;
+                            self.stack.push(Value::Struct(id, f));
+                        }
+                        Value::HeapRef(ptr) => {
+                            let struct_val = self
+                                .heap
+                                .get_mut(ptr)
+                                .ok_or_else(|| anyhow::anyhow!("Invalid heap poniter"))?;
+                            if let Value::Struct(_, f) = struct_val {
+                                if field_index as usize > f.len() {
+                                    bail!("Field index out of bounds");
+                                }
+                                f[field_index as usize] = value;
+                            } else {
+                                bail!("Expected struct on heap");
+                            }
+                        }
+                        Value::Reference(handle) => {
+                            let call_frame = self
+                                .call_stack
+                                .iter_mut()
+                                .find(|f| f.frame_id == handle.frame_idx)
+                                .ok_or_else(|| anyhow::anyhow!("Invalid frame reference"))?;
+                            if let Value::Struct(_, f) = &mut call_frame.locals[handle.local_idx] {
+                                if field_index as usize > f.len() {
+                                    bail!("Field index out of bounds");
+                                }
+                                f[field_index as usize] = value;
+                            } else {
+                                bail!("Expected reference to struct");
+                            }
+                        }
+                        _ => bail!("Cannot get field from type {struct_val:?}"),
                     }
                 }
 

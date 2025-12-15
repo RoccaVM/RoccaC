@@ -1,4 +1,4 @@
-use std::fs;
+use std::{collections::HashMap, fs};
 
 use anyhow::{Result, bail};
 use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
@@ -10,7 +10,7 @@ use crate::{
     parser::{AstNode, Loc},
     registry::SymbolRegistry,
     scope::{ScopeManager, Variable},
-    types::{Mutability, Type},
+    types::{Field, Mutability, StructDef, Type, TypeRegistry},
 };
 
 pub struct Compiler {
@@ -22,6 +22,7 @@ pub struct Compiler {
 
     native_registry: NativeRegistry,
     symbol_registry: SymbolRegistry,
+    type_registry: TypeRegistry,
 
     scope_manager: ScopeManager,
     borrow_checker: BorrowChecker,
@@ -38,6 +39,7 @@ impl Default for Compiler {
 
             native_registry: NativeRegistry::new(),
             symbol_registry: SymbolRegistry::new(),
+            type_registry: TypeRegistry::new(),
 
             scope_manager: ScopeManager::new(),
             borrow_checker: BorrowChecker::new(),
@@ -55,7 +57,13 @@ impl Compiler {
 
     pub fn compile(&mut self, ast: Vec<AstNode>) -> Result<BytecodeFile> {
         for node in ast.clone() {
-            self.symbol_registry.traverse(node)?;
+            if let AstNode::StructDef(name, type_params, fields, loc) = node {
+                self.compile_struct_def(name, type_params, fields, loc)?;
+            }
+        }
+
+        for node in ast.clone() {
+            self.symbol_registry.traverse(node, &self.type_registry)?;
         }
 
         for node in ast {
@@ -87,7 +95,7 @@ impl Compiler {
             AstNode::Let(name, mutability, data_type, expr, loc) => {
                 self.compile_let(&name, mutability, data_type, *expr, loc)
             }
-            AstNode::Assign(name, expr, loc) => self.compile_assign(*name, *expr, loc),
+            AstNode::Assign(target, expr, loc) => self.compile_assign(*target, *expr, loc),
             AstNode::Call(name, args, loc) => self.compile_function_call(&name, args, loc),
             AstNode::Return(expr, loc) => self.compile_return(expr, loc),
             AstNode::FnDef(name, args, return_type, body, loc) => {
@@ -99,11 +107,19 @@ impl Compiler {
             AstNode::While(cond, stmts, loc) => self.compile_while(*cond, stmts, loc),
             AstNode::Ref(expr, mutable, loc) => self.compile_ref(*expr, mutable, loc),
             AstNode::Deref(expr, loc) => self.compile_deref(*expr, loc),
+            AstNode::StructDef(_, _, _, _) => Ok(Type::Unit),
+            AstNode::StructLiteral(name, field_values, loc) => {
+                self.compile_struct_literal(name, field_values, loc)
+            }
+            AstNode::FieldAccess(struc, field, loc) => {
+                self.compile_field_access(*struc, field, loc)
+            }
+            AstNode::MethodCall(_, _, _, _) => unimplemented!(), // TODO: Implement ionce impls
         }
     }
 
     fn infer_type(&self, node: &AstNode) -> Result<Type> {
-        let s = Type::infer(node.clone())?;
+        let s = Type::infer(node.clone(), &self.type_registry)?;
         match s {
             Type::Unknown => match node {
                 AstNode::Ident(name, loc) => {
@@ -149,8 +165,35 @@ impl Compiler {
                         Ok(Type::Unknown)
                     }
                 }
+                AstNode::Ref(inner, mutable, _) => {
+                    let inner_type = self.infer_type(inner)?;
+                    Ok(Type::Reference(
+                        Box::new(inner_type),
+                        if *mutable {
+                            Mutability::Mutable
+                        } else {
+                            Mutability::Immutable
+                        },
+                    ))
+                }
+                AstNode::Deref(inner, _) => {
+                    let inner_type = self.infer_type(inner)?;
+                    match inner_type {
+                        Type::Reference(t, _) => Ok(*t),
+                        Type::Box(t) => Ok(*t),
+                        _ => Err(anyhow::anyhow!("Cannot dereference non-reference type")),
+                    }
+                }
                 _ => Ok(Type::Unknown),
             },
+            Type::Reference(inner_type, mutability) if *inner_type == Type::Unknown => {
+                if let AstNode::Ref(inner, _, _) = node {
+                    let inner_type = self.infer_type(inner)?;
+                    Ok(Type::Reference(Box::new(inner_type), mutability))
+                } else {
+                    Ok(Type::Unknown)
+                }
+            }
             _ => Ok(s),
         }
     }
@@ -336,7 +379,7 @@ impl Compiler {
         loc: Loc,
     ) -> Result<Type> {
         let dt = if let Some(data_type) = data_type.clone() {
-            Type::from_string(data_type.0)?
+            Type::from_string(data_type.0, &self.type_registry)?
         } else {
             self.infer_type(&expr)?
         };
@@ -373,13 +416,13 @@ impl Compiler {
                         Label::new(data_type.1)
                             .with_message(format!(
                                 "Expected type {:?}",
-                                Type::from_string(data_type.0.clone())?
+                                Type::from_string(data_type.0.clone(), &self.type_registry)?
                             ))
                             .with_color(b),
                     )
                     .with_help(format!(
                         "Remove the type specifier or replace it with '{:?}'",
-                        Type::from_string(data_type.0)?
+                        Type::from_string(data_type.0, &self.type_registry)?
                     ));
             }
 
@@ -400,8 +443,8 @@ impl Compiler {
         Ok(Type::Unit)
     }
 
-    fn compile_assign(&mut self, name: AstNode, expr: AstNode, loc: Loc) -> Result<Type> {
-        match name {
+    fn compile_assign(&mut self, target: AstNode, expr: AstNode, loc: Loc) -> Result<Type> {
+        match target {
             AstNode::Ident(n, ident_loc) => {
                 self.borrow_checker.can_use(&n, ident_loc.clone())?;
 
@@ -612,15 +655,174 @@ impl Compiler {
                     }
                 }
             }
+            AstNode::FieldAccess(object, field_name, field_loc) => {
+                let object_type = self.compile_node(*object.clone())?;
+
+                let actual_type = if let Type::Reference(inner, mutability) = &object_type {
+                    if !matches!(mutability, Mutability::Mutable) {
+                        self.report_error(
+                            &field_loc,
+                            "Cannot mutate through immutable reference".to_string(),
+                        );
+                        bail!("Immutable reference");
+                    }
+
+                    inner.as_ref().clone()
+                } else if let Type::Box(inner) = &object_type {
+                    inner.as_ref().clone()
+                } else {
+                    object_type
+                };
+
+                if let Type::Struct(struct_id) = actual_type {
+                    let struct_def = self
+                        .type_registry
+                        .get_struct_by_id(struct_id)
+                        .ok_or_else(|| anyhow::anyhow!("Struct not found"))?
+                        .clone();
+
+                    let field_index = struct_def
+                        .field_offset(&field_name)
+                        .ok_or_else(|| anyhow::anyhow!("Field not found"))?;
+
+                    let field_type = struct_def.fields[field_index as usize].ty.clone();
+
+                    let value_type = self.compile_node(expr)?;
+
+                    if !value_type.can_convert_to(field_type.clone()) {
+                        self.report_error(
+                            &loc,
+                            format!(
+                                "Type mismatch: cannot assign {value_type:?} to field of type {field_type:?}"
+                            ),
+                        );
+                        bail!("Type mismatch");
+                    }
+
+                    self.emit_opcode(Opcode::FieldSet);
+                    self.emit_u16(field_index);
+
+                    self.pop_stack();
+                    self.pop_stack();
+
+                    if let AstNode::Ident(name, ident_loc) = *object {
+                        self.push_stack();
+
+                        let name = &name;
+                        let var = self
+                            .scope_manager
+                            .lookup(name)
+                            .ok_or_else(|| {
+                                let mut colors = ColorGenerator::new();
+                                let a = colors.next();
+                                Report::build(ReportKind::Error, ident_loc.clone())
+                                    .with_message(format!("Variable {name:?} not found"))
+                                    .with_label(
+                                        Label::new(ident_loc.clone())
+                                            .with_message(format!(
+                                                "Could not find a variable named {name:?}"
+                                            ))
+                                            .with_color(a),
+                                    )
+                                    .finish()
+                                    .print((
+                                        ident_loc.0.clone(),
+                                        Source::from(
+                                            fs::read_to_string(ident_loc.0.clone()).unwrap(),
+                                        ),
+                                    ))
+                                    .unwrap();
+                                anyhow::anyhow!("Varaible {name:?} not found")
+                            })?
+                            .clone();
+
+                        if !Type::Struct(struct_def.id).can_convert_to(var.ty.clone()) {
+                            let mut colors = ColorGenerator::new();
+                            let a = colors.next();
+                            let b = colors.next();
+                            Report::build(ReportKind::Error, ident_loc.clone())
+                                .with_message(format!(
+                                    "Unable to convert from {:?} to {:?}",
+                                    Type::Struct(struct_def.id),
+                                    var.ty
+                                ))
+                                .with_label(
+                                    Label::new(var.definition_loc.clone())
+                                        .with_message(format!("Expected type {:?}", var.ty))
+                                        .with_color(b),
+                                )
+                                .with_label(
+                                    Label::new(loc.clone())
+                                        .with_message(format!(
+                                            "Expression has type {:?}",
+                                            Type::Struct(struct_def.id)
+                                        ))
+                                        .with_color(a),
+                                )
+                                .finish()
+                                .print((
+                                    ident_loc.0.clone(),
+                                    Source::from(fs::read_to_string(ident_loc.0).unwrap()),
+                                ))
+                                .unwrap();
+                            bail!(
+                                "Unable to convert from {:?} to {:?}",
+                                Type::Struct(struct_def.id),
+                                var.ty
+                            );
+                        }
+
+                        if !var.mutable {
+                            let mut colors = ColorGenerator::new();
+                            let a = colors.next();
+                            let b = colors.next();
+                            Report::build(ReportKind::Error, ident_loc.clone())
+                                .with_message(format!("Variable {name} is immutable"))
+                                .with_label(
+                                    Label::new(var.definition_loc)
+                                        .with_message("Variable was not defined as mutable")
+                                        .with_color(b),
+                                )
+                                .with_label(
+                                    Label::new(ident_loc.clone())
+                                        .with_message(
+                                            "Variable must be mutable to allow assignment",
+                                        )
+                                        .with_color(a),
+                                )
+                                .finish()
+                                .print((
+                                    ident_loc.0.clone(),
+                                    Source::from(fs::read_to_string(ident_loc.0).unwrap()),
+                                ))
+                                .unwrap();
+                            bail!("Variable {name} is immutable");
+                        }
+
+                        self.emit_opcode(Opcode::StoreLocal);
+                        self.emit_u16(var.local_idx);
+
+                        self.pop_stack();
+                    }
+
+                    Ok(Type::Unit)
+                } else {
+                    self.report_error(
+                        &field_loc,
+                        "Cannot assign to field of non-struct type".to_string(),
+                    );
+                    bail!("Not a struct");
+                }
+            }
             _ => {
                 let mut colors = ColorGenerator::new();
                 let a = colors.next();
                 Report::build(ReportKind::Error, loc.clone())
                     .with_message(format!(
-                        "Assignment is only possible to an Ident or a Reference, got: {name:?}"
+                        "Assignment is only possible to an Ident, Reference or a Struct's field, got: {target:?}"
                     ))
                     .with_label(
-                        Label::new(name.loc())
+                        Label::new(target.loc())
                             .with_message("Node is of type: {name:?}")
                             .with_color(a),
                     )
@@ -630,7 +832,9 @@ impl Compiler {
                         Source::from(fs::read_to_string(loc.0).unwrap()),
                     ))
                     .unwrap();
-                bail!("Assignment is only possible to an Ident or a Reference, got: {name:?}");
+                bail!(
+                    "Assignment is only possible to an Ident, Reference or a Struct's field, got: {target:?}"
+                );
             }
         }
     }
@@ -992,7 +1196,7 @@ impl Compiler {
         for arg in args {
             let idx = self.next_local;
             let var = Variable {
-                ty: Type::from_string(arg.1)?,
+                ty: Type::from_string(arg.1, &self.type_registry)?,
                 local_idx: idx,
                 mutable: false,
                 definition_loc: arg.2,
@@ -1006,6 +1210,201 @@ impl Compiler {
         }
 
         Ok(Type::Unit)
+    }
+
+    fn compile_struct_def(
+        &mut self,
+        name: String,
+        type_params: Vec<String>,
+        field_defs: Vec<(String, String, Loc)>,
+        loc: Loc,
+    ) -> Result<Type> {
+        let mut fields = Vec::new();
+
+        for (i, (field_name, field_type_str, field_loc)) in field_defs.into_iter().enumerate() {
+            let field_type = Type::from_string(field_type_str, &self.type_registry)?;
+            fields.push(Field {
+                name: field_name,
+                ty: field_type,
+                offset: i as u16,
+                loc: field_loc,
+            });
+        }
+
+        let struct_def = StructDef {
+            id: 0, // Will be set by register_struct
+            name: name.clone(),
+            fields,
+            type_params: type_params.clone(),
+            methods: HashMap::new(),
+            is_generic: !type_params.is_empty(),
+            loc,
+        };
+
+        self.type_registry.register_struct(name, struct_def);
+        Ok(Type::Unit)
+    }
+
+    fn compile_struct_literal(
+        &mut self,
+        type_name: String,
+        field_values: Vec<(String, Box<AstNode>)>,
+        loc: Loc,
+    ) -> Result<Type> {
+        let struct_def = self
+            .type_registry
+            .get_struct(&type_name)
+            .ok_or_else(|| {
+                let mut colors = ColorGenerator::new();
+                let a = colors.next();
+                Report::build(ReportKind::Error, loc.clone())
+                    .with_message(format!("Struct {type_name:?} not found"))
+                    .with_label(
+                        Label::new(loc.clone())
+                            .with_message("Unknown struct type")
+                            .with_color(a),
+                    )
+                    .finish()
+                    .print((
+                        loc.0.clone(),
+                        Source::from(fs::read_to_string(&loc.0).unwrap()),
+                    ))
+                    .unwrap();
+                anyhow::anyhow!("Struct {type_name:?} not found")
+            })?
+            .clone();
+
+        if field_values.len() != struct_def.fields.len() {
+            let mut colors = ColorGenerator::new();
+            let a = colors.next();
+            Report::build(ReportKind::Error, loc.clone())
+                .with_message(format!(
+                    "Struct {type_name} has {} fields, but {} were provided",
+                    struct_def.fields.len(),
+                    field_values.len()
+                ))
+                .with_label(
+                    Label::new(loc.clone())
+                        .with_message("Incorrect number of fields")
+                        .with_color(a),
+                )
+                .finish()
+                .print((
+                    loc.0.clone(),
+                    Source::from(fs::read_to_string(&loc.0).unwrap()),
+                ))
+                .unwrap();
+            bail!("Incorrect number of struct fields");
+        }
+
+        for field_def in &struct_def.fields {
+            let field_value = field_values
+                .iter()
+                .find(|(name, _)| name == &field_def.name)
+                .ok_or_else(|| {
+                    let mut colors = ColorGenerator::new();
+                    let a = colors.next();
+                    Report::build(ReportKind::Error, loc.clone())
+                        .with_message(format!(
+                            "Missing field '{}' in struct literal",
+                            field_def.name
+                        ))
+                        .with_label(
+                            Label::new(loc.clone())
+                                .with_message(format!("Field '{}' not provided", field_def.name))
+                                .with_color(a),
+                        )
+                        .with_label(
+                            Label::new(field_def.loc.clone())
+                                .with_message("Field defined here")
+                                .with_color(colors.next()),
+                        )
+                        .finish()
+                        .print((
+                            loc.0.clone(),
+                            Source::from(fs::read_to_string(&loc.0).unwrap()),
+                        ))
+                        .unwrap();
+                    anyhow::anyhow!("Missing field in struct literal")
+                })?;
+
+            let actual_type = self.compile_node(*field_value.1.clone())?;
+
+            if !actual_type.can_convert_to(field_def.ty.clone()) {
+                let mut colors = ColorGenerator::new();
+                let a = colors.next();
+                let b = colors.next();
+                Report::build(ReportKind::Error, loc.clone())
+                    .with_message(format!(
+                        "Type mismatch for field '{}': expected {:?}, got {:?}",
+                        field_def.name, field_def.ty, actual_type
+                    ))
+                    .with_label(
+                        Label::new(field_value.1.loc())
+                            .with_message(format!("Expression has type {actual_type:?}"))
+                            .with_color(a),
+                    )
+                    .with_label(
+                        Label::new(field_def.loc.clone())
+                            .with_message(format!("Field expects type {:?}", field_def.ty))
+                            .with_color(b),
+                    )
+                    .finish()
+                    .print((
+                        loc.0.clone(),
+                        Source::from(fs::read_to_string(&loc.0).unwrap()),
+                    ))
+                    .unwrap();
+                bail!("Type mismatch in struct literal");
+            }
+        }
+
+        self.emit_opcode(Opcode::StructNew);
+        self.emit_u32(struct_def.id);
+        self.emit_u16(struct_def.fields.len() as u16);
+
+        Ok(Type::Struct(struct_def.id))
+    }
+
+    fn compile_field_access(&mut self, struc: AstNode, field: String, loc: Loc) -> Result<Type> {
+        let struct_type = self.compile_node(struc)?;
+
+        let actual_type = if let Type::Reference(inner, _) = &struct_type {
+            self.emit_opcode(Opcode::LoadLocal);
+            inner.as_ref().clone()
+        } else {
+            struct_type
+        };
+
+        match actual_type {
+            Type::Struct(id) => {
+                let struct_def = self
+                    .type_registry
+                    .get_struct_by_id(id)
+                    .ok_or_else(|| anyhow::anyhow!("Struct not found"))?;
+                let field_index = struct_def.field_offset(&field).ok_or_else(|| {
+                    self.report_error(
+                        &loc,
+                        format!(
+                            "Field '{}' not found in struct '{}'",
+                            field, struct_def.name
+                        ),
+                    );
+                    anyhow::anyhow!("Field not found")
+                })?;
+
+                let field_type = struct_def.fields[field_index as usize].ty.clone();
+
+                self.emit_opcode(Opcode::FieldGet);
+                self.emit_u16(field_index);
+
+                Ok(field_type)
+            }
+            _ => {
+                self.report_error(&loc, format!("Cannot access field on type {actual_type:?}"));
+                bail!("Not a struct");
+            }
+        }
     }
 
     fn compile_function_call(&mut self, name: &str, args: Vec<AstNode>, loc: Loc) -> Result<Type> {
@@ -1269,5 +1668,22 @@ impl Compiler {
         if self.current_stack_depth > 0 {
             self.current_stack_depth -= 1;
         }
+    }
+
+    fn report_error(&self, loc: &Loc, message: String) {
+        use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
+        use std::fs;
+
+        let mut colors = ColorGenerator::new();
+        let a = colors.next();
+        Report::build(ReportKind::Error, loc.clone())
+            .with_message(message.clone())
+            .with_label(Label::new(loc.clone()).with_message(message).with_color(a))
+            .finish()
+            .print((
+                loc.0.clone(),
+                Source::from(fs::read_to_string(&loc.0).unwrap_or_default()),
+            ))
+            .ok();
     }
 }

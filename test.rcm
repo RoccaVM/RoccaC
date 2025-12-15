@@ -1,3 +1,8 @@
+struct Point {
+  x: Int,
+  y: Int
+}
+
 fn main() {
   print(add(1, 2), "\n");
 
@@ -29,8 +34,21 @@ fn main() {
   print(*x, "\n");
   *x = 50;
   print(*x, "\n");
-  drop(x);
-  print(*x, "\n");
+
+  let mut p = Point {
+    x: 10,
+    y: 60
+  };
+
+  print_point(p);
+
+  p.x = 20;
+
+  print_point(p);
+}
+
+fn print_point(p: Point) {
+  print("Point: { x:", p.x, ", y:", p.y, "}\n");
 }
 
 fn pass_by_value(a: Int) {

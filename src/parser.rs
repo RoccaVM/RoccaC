@@ -49,6 +49,14 @@ pub enum AstNode {
     While(Box<AstNode>, Vec<AstNode>, Loc),
     Ref(Box<AstNode>, bool, Loc),
     Deref(Box<AstNode>, Loc),
+    // Name, Type params, Field[(Name, Type)]
+    StructDef(String, Vec<String>, Vec<(String, String, Loc)>, Loc),
+    // Name, Field[(Name, Value)]
+    StructLiteral(String, Vec<(String, Box<AstNode>)>, Loc),
+    // Object, Field name
+    FieldAccess(Box<AstNode>, String, Loc),
+    // Object, Method name, Args
+    MethodCall(Box<AstNode>, String, Vec<AstNode>, Loc),
 }
 
 impl AstNode {
@@ -69,6 +77,10 @@ impl AstNode {
             AstNode::While(_, _, loc) => loc.clone(),
             AstNode::Ref(_, _, loc) => loc.clone(),
             AstNode::Deref(_, loc) => loc.clone(),
+            AstNode::StructDef(_, _, _, loc) => loc.clone(),
+            AstNode::StructLiteral(_, _, loc) => loc.clone(),
+            AstNode::FieldAccess(_, _, loc) => loc.clone(),
+            AstNode::MethodCall(_, _, _, loc) => loc.clone(),
         }
     }
 }
@@ -252,12 +264,53 @@ fn build_ast(pair: Pair<Rule>, file: &str) -> Result<AstNode> {
                     first.as_str().trim().to_string(),
                     to_loc(file, pair),
                 )),
-                Rule::primary => build_ast(first, file),
+                Rule::atom_expr => build_ast(first, file),
                 Rule::ref_expr => build_ast(first, file),
                 _ => Err(anyhow::anyhow!("Unexpected rule: {:?}", first.as_rule())),
             }
         }
-        Rule::primary => build_ast(pair.into_inner().next().unwrap(), file),
+        Rule::atom_expr => {
+            let mut pairs = pair.clone().into_inner();
+            let mut object = build_ast(pairs.next().unwrap(), file)?;
+
+            for field_suffix in pairs {
+                match field_suffix.as_rule() {
+                    Rule::field_suffix => {
+                        let mut p = field_suffix.into_inner();
+                        let coi = p.next().unwrap();
+                        match coi.as_rule() {
+                            Rule::ident => {
+                                object = AstNode::FieldAccess(
+                                    Box::new(object),
+                                    coi.as_str().trim().to_string(),
+                                    to_loc(file, coi),
+                                );
+                            }
+                            Rule::call => {
+                                let mut call_pairs = coi.clone().into_inner();
+                                let method_name =
+                                    call_pairs.next().unwrap().as_str().trim().to_string();
+                                let args = call_pairs
+                                    .map(|arg| build_ast(arg, file))
+                                    .collect::<Result<Vec<_>>>()?;
+
+                                object = AstNode::MethodCall(
+                                    Box::new(object),
+                                    method_name,
+                                    args,
+                                    to_loc(file, coi),
+                                )
+                            }
+                            _ => bail!("Unexpected rule: {coi:?}"),
+                        }
+                    }
+                    _ => bail!("Unexpected rule: {field_suffix:?}"),
+                }
+            }
+
+            Ok(object)
+        }
+        Rule::base_expr => build_ast(pair.into_inner().next().unwrap(), file),
         Rule::let_stmt => {
             let mut pairs = pair.clone().into_inner();
             if pairs.len() < 2 && pairs.len() > 4 {
@@ -429,6 +482,86 @@ fn build_ast(pair: Pair<Rule>, file: &str) -> Result<AstNode> {
                 body,
                 to_loc(file, pair),
             ))
+        }
+        Rule::struct_def => {
+            let mut pairs = pair.clone().into_inner();
+
+            let name = pairs
+                .next()
+                .expect("Struct definition must include name")
+                .as_str()
+                .trim()
+                .to_string();
+
+            if let Some(pair) = pairs.next() {
+                let mut type_params = Vec::new();
+                let mut fields = Vec::new();
+
+                match pair.clone().as_rule() {
+                    Rule::generic_spec => {
+                        let pairs = pair.clone().into_inner();
+
+                        for spec in pairs {
+                            type_params.push(spec.as_str().trim().to_string());
+                        }
+                    }
+                    Rule::ident => {
+                        let field_name = pair.clone().as_str().trim().to_string();
+                        let ty = pairs
+                            .next()
+                            .expect("Field must have type specifier")
+                            .as_str()
+                            .trim()
+                            .to_string();
+                        fields.push((field_name, ty, to_loc(file, pair.clone())));
+                    }
+                    _ => bail!("Unexpected pair"),
+                }
+
+                while let Some(field) = pairs.next() {
+                    let field_name = field.clone().as_str().trim().to_string();
+                    let ty = pairs
+                        .next()
+                        .expect("Field must have type specifier")
+                        .as_str()
+                        .trim()
+                        .to_string();
+                    fields.push((field_name, ty, to_loc(file, field)));
+                }
+
+                Ok(AstNode::StructDef(
+                    name,
+                    type_params,
+                    fields,
+                    to_loc(file, pair),
+                ))
+            } else {
+                Ok(AstNode::StructDef(
+                    name,
+                    Vec::new(),
+                    Vec::new(),
+                    to_loc(file, pair),
+                ))
+            }
+        }
+        Rule::struct_literal => {
+            let mut pairs = pair.clone().into_inner();
+
+            let name = pairs
+                .next()
+                .expect("Struct literal must have name")
+                .as_str()
+                .trim()
+                .to_string();
+
+            let mut fields = Vec::new();
+            while let Some(field) = pairs.next() {
+                let field_name = field.as_str().trim().to_string();
+                let value = build_ast(pairs.next().expect("Field must have initializer"), file)?;
+                fields.push((field_name, Box::new(value)));
+            }
+
+            Ok(AstNode::StructLiteral(name, fields, to_loc(file, pair)))
         }
         Rule::stmt => Ok(build_ast(pair.into_inner().next().unwrap(), file)?),
         _ => Err(anyhow::anyhow!("Unexpected rule: {:?}", pair.as_rule())),

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 
-use crate::parser::AstNode;
+use crate::parser::{AstNode, Loc};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Type {
@@ -21,8 +21,8 @@ pub enum Type {
     Unknown,
 }
 
-type StructId = u32;
-type EnumId = u32;
+pub type StructId = u32;
+pub type EnumId = u32;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Mutability {
@@ -31,24 +31,27 @@ pub enum Mutability {
 }
 
 impl Type {
-    pub fn from_string(ts: String) -> Result<Self> {
+    pub fn from_string(ts: String, registry: &TypeRegistry) -> Result<Self> {
         if ts.starts_with("&mut") {
             let inner = ts.strip_prefix("&mut").unwrap();
             return Ok(Self::Reference(
-                Box::new(Self::from_string(inner.to_string())?),
+                Box::new(Self::from_string(inner.to_string(), registry)?),
                 Mutability::Mutable,
             ));
         } else if ts.starts_with("&") {
             let inner = ts.strip_prefix("&").unwrap();
             return Ok(Self::Reference(
-                Box::new(Self::from_string(inner.to_string())?),
+                Box::new(Self::from_string(inner.to_string(), registry)?),
                 Mutability::Immutable,
             ));
         }
 
         if ts.starts_with("Box<") && ts.ends_with(">") {
             let inner = &ts[4..ts.len() - 1];
-            return Ok(Self::Box(Box::new(Self::from_string(inner.to_string())?)));
+            return Ok(Self::Box(Box::new(Self::from_string(
+                inner.to_string(),
+                registry,
+            )?)));
         }
 
         match ts.trim() {
@@ -57,16 +60,23 @@ impl Type {
             "String" => Ok(Self::String),
             "Unit" => Ok(Self::Unit),
             "Never" | "!" => Ok(Self::Never),
-            _ => Err(anyhow::anyhow!("Unable to convert '{ts}' to a type")),
+            name => {
+                let id = registry.get_struct(name);
+                if let Some(id) = id {
+                    Ok(Self::Struct(id.id))
+                } else {
+                    Err(anyhow::anyhow!("Unable to convert {name} into a type"))
+                }
+            }
         }
     }
 
-    pub fn infer(ast: AstNode) -> Result<Self> {
+    pub fn infer(ast: AstNode, registry: &TypeRegistry) -> Result<Self> {
         match ast {
             AstNode::Number(_, _) => Ok(Self::Int),
             AstNode::String(_, _) => Ok(Self::String),
             AstNode::Ref(inner, mutable, _) => {
-                let inner_type = Self::infer(*inner)?;
+                let inner_type = Self::infer(*inner, registry)?;
                 Ok(Self::Reference(
                     Box::new(inner_type),
                     if mutable {
@@ -77,7 +87,7 @@ impl Type {
                 ))
             }
             AstNode::Deref(inner, _) => {
-                let inner_type = Self::infer(*inner)?;
+                let inner_type = Self::infer(*inner, registry)?;
                 match inner_type {
                     Type::Reference(t, _) => Ok(*t),
                     Type::Box(t) => Ok(*t),
@@ -95,6 +105,14 @@ impl Type {
                 "!" => Ok(Self::Bool),
                 _ => Ok(Self::Unknown),
             },
+            AstNode::StructLiteral(name, _, _) => {
+                let id = registry.get_struct(&name);
+                if let Some(id) = id {
+                    Ok(Self::Struct(id.id))
+                } else {
+                    Ok(Self::Unknown)
+                }
+            }
             _ => Ok(Self::Unknown),
         }
     }
@@ -159,15 +177,18 @@ pub struct Field {
     pub name: String,
     pub ty: Type,
     pub offset: u16,
+    pub loc: Loc,
 }
 
 #[derive(Clone, Debug)]
 pub struct StructDef {
+    pub id: StructId,
     pub name: String,
     pub fields: Vec<Field>,
     pub type_params: Vec<String>,
     pub methods: HashMap<String, u32>,
     pub is_generic: bool,
+    pub loc: Loc,
 }
 
 impl StructDef {
@@ -187,5 +208,53 @@ impl StructDef {
 
     pub fn total_size(&self) -> u16 {
         self.fields.last().map(|f| f.offset + 1).unwrap_or(0)
+    }
+}
+
+pub struct TypeRegistry {
+    structs: HashMap<String, StructDef>,
+    next_struct_id: StructId,
+}
+
+impl Default for TypeRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TypeRegistry {
+    pub fn new() -> Self {
+        Self {
+            structs: HashMap::new(),
+            next_struct_id: 0,
+        }
+    }
+
+    pub fn register_struct(&mut self, name: String, mut def: StructDef) -> StructId {
+        let id = self.next_struct_id;
+        self.next_struct_id += 1;
+        def.id = id;
+        self.structs.insert(name, def);
+        id
+    }
+
+    pub fn get_struct(&self, name: &str) -> Option<&StructDef> {
+        self.structs.get(name)
+    }
+
+    pub fn get_struct_by_id(&self, id: StructId) -> Option<&StructDef> {
+        self.structs.iter().find(|s| s.1.id == id).map(|s| s.1)
+    }
+
+    pub fn find_methods(&self, type_name: &str, method_name: &str) -> Option<u32> {
+        if let Some(struct_def) = self.structs.get(type_name)
+            && let Some(&func_idx) = struct_def.methods.get(method_name)
+        {
+            return Some(func_idx);
+        }
+
+        // TODO: Once traits and impls exist, implement cheking here
+
+        None
     }
 }

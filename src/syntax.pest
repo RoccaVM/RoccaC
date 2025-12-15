@@ -11,7 +11,9 @@ char = {
 }
 call = { ident ~ "(" ~ (logic ~ ("," ~ logic)*)? ~ ")" }
 
-ref_expr = { "&" ~ mut_specifier? ~ primary }
+struct_literal = { ident ~ "{" ~ (ident ~ ":" ~ logic ~ ("," ~ ident ~ ":" ~ logic)*)? ~ "}" }
+
+ref_expr = { "&" ~ mut_specifier? ~ atom_expr }
 deref = { "*" ~ ident }
 
 PLUS = @{ "+" }
@@ -23,8 +25,11 @@ BANG = @{ "!" }
 
 expr = { term ~ ((PLUS | MINUS) ~ term)* }
 term = { factor ~ ((STAR | SLASH | PERCENT) ~ factor)* }
-factor = { ((MINUS | BANG) ~ primary) | ref_expr | primary }
-primary = { "(" ~ logic ~ ")" | call | number | deref | ident | string }
+factor = { ((MINUS | BANG) ~ atom_expr) | ref_expr | atom_expr }
+base_expr = { "(" ~ logic ~ ")" | struct_literal | call | number | deref | ident | string }
+
+field_suffix = { "." ~ (ident | call) }
+atom_expr = { base_expr ~ field_suffix* }
 
 GT = @{ ">" }
 LT = @{ "<" }
@@ -48,7 +53,7 @@ data_type = { "&" ~ "mut"? ~ base_type | base_type }
 base_type = { ident ~ ("<" ~ data_type ~ ">")? }
 
 let_stmt = { "let" ~ mut_specifier? ~ ident ~ (":" ~ data_type)? ~ "=" ~ logic }
-assign_stmt = { (deref | ident) ~ "=" ~ logic }
+assign_stmt = { atom_expr ~ "=" ~ logic }
 return_stmt = { "return" ~ logic? }
 
 if_stmt = { "if" ~ logic ~ "{" ~ stmt* ~ "}" ~ else_if_stmt* ~ else_stmt? }
@@ -59,7 +64,10 @@ while_loop = { "while" ~ logic ~ "{" ~ stmt* ~ "}" }
 
 fn_def = { "fn" ~ ident ~ "(" ~ (ident ~ ":" ~ data_type ~ ("," ~ ident ~ ":" ~ data_type)*)? ~ ")" ~ ("->" ~ data_type)? ~ "{" ~ stmt* ~ "}" }
 
-compound_stmt = _{ fn_def | if_stmt | while_loop }
+generic_spec = { "<" ~ ident ~ ("," ~ ident)* ~ ">" }
+struct_def = { "struct" ~ ident ~ generic_spec? ~ "{" ~ (ident ~ ":" ~ data_type ~ ("," ~ ident ~ ":" ~ data_type)* ~ ","?)? ~ "}" }
+
+compound_stmt = _{ struct_def | fn_def | if_stmt | while_loop }
 simple_stmt = _{ let_stmt | assign_stmt | return_stmt | logic }
 
 stmt = { (simple_stmt ~ ";") | compound_stmt }

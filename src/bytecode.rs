@@ -100,6 +100,11 @@ pub enum Opcode {
     HeapLoad = 0x81,
     HeapStore = 0x82,
     HeapFree = 0x83,
+
+    // Custom data types
+    StructNew = 0x90,
+    FieldGet = 0x91,
+    FieldSet = 0x92,
 }
 
 impl Default for BytecodeFile {
